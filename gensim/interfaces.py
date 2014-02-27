@@ -16,7 +16,8 @@ from __future__ import with_statement
 import logging
 import itertools
 
-import utils, matutils
+from . import utils, matutils
+from ._six.moves import xrange
 
 
 logger = logging.getLogger('gensim.interfaces')

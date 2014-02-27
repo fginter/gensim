@@ -44,6 +44,14 @@ are already built-in::
 
 and so on.
 
+If you're finished training a model (=no more updates, only querying), you can do
+
+  >>> model.init_sims(replace=True)
+
+to trim unneeded model memory = use (much) less RAM.
+
+For a tutorial with an interactive word2vec model trained on GoogleNews, visit http://radimrehurek.com/2014/02/word2vec-tutorial/
+
 .. [1] Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey Dean. Efficient Estimation of Word Representations in Vector Space. In Proceedings of Workshop at ICLR, 2013.
 .. [2] Optimizing word2vec in gensim, http://radimrehurek.com/2013/09/word2vec-in-python-part-two-optimizing/
 """
@@ -53,17 +61,21 @@ import sys
 import os
 import heapq
 import time
-import itertools
 import threading
-from Queue import Queue
+try:
+    from queue import Queue
+except ImportError:
+    from Queue import Queue
 
 from numpy import exp, dot, zeros, outer, random, dtype, get_include, float32 as REAL,\
-    uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis, ndarray
+    uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis, ndarray, empty
 
 logger = logging.getLogger("gensim.models.word2vec")
 
 
-from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
+from .. import utils, matutils  # utility fnc for pickling, common scipy operations etc
+from .._six import iteritems, itervalues, string_types
+from .._six.moves import xrange
 
 
 try:
@@ -224,7 +236,7 @@ class Word2Vec(utils.SaveLoad):
 
         # assign a unique index to each word
         self.vocab, self.index2word = {}, []
-        for word, v in vocab.iteritems():
+        for word, v in iteritems(vocab):
             if v.count >= self.min_count:
                 v.index = len(self.vocab)
                 self.index2word.append(word)
@@ -251,7 +263,7 @@ class Word2Vec(utils.SaveLoad):
             raise RuntimeError("you must first build vocabulary before training the model")
 
         start, next_report = time.time(), [1.0]
-        word_count, total_words = [word_count], total_words or sum(v.count for v in self.vocab.itervalues())
+        word_count, total_words = [word_count], total_words or sum(v.count for v in itervalues(self.vocab))
         jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
         lock = threading.Lock()  # for shared state (=number of words trained so far, log reports...)
 
@@ -301,10 +313,13 @@ class Word2Vec(utils.SaveLoad):
 
     def reset_weights(self):
         """Reset all projection weights to an initial (untrained) state, but keep the existing vocabulary."""
+        logger.info("resetting layer weights")
         random.seed(self.seed)
-        self.syn0 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
+        self.syn0 = empty((len(self.vocab), self.layer1_size), dtype=REAL)
+        # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
+        for i in xrange(len(self.vocab)):
+            self.syn0[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
         self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
-        self.syn0 += (random.rand(len(self.vocab), self.layer1_size) - 0.5) / self.layer1_size
         self.syn0norm = None
 
 
@@ -319,7 +334,8 @@ class Word2Vec(utils.SaveLoad):
         with open(fname, 'wb') as fout:
             fout.write("%s %s\n" % self.syn0.shape)
             # store in sorted order: most frequent words at the top
-            for word, vocab in sorted(self.vocab.iteritems(), key=lambda item: -item[1].count):
+            for word, vocab in sorted(iteritems(self.vocab),
+                                      key=lambda item: -item[1].count):
                 word = utils.to_utf8(word)  # always store in utf8
                 row = self.syn0[vocab.index]
                 if binary:
@@ -329,7 +345,7 @@ class Word2Vec(utils.SaveLoad):
 
 
     @classmethod
-    def load_word2vec_format(cls, fname, binary=False):
+    def load_word2vec_format(cls, fname, binary=False, norm_only=True):
         """
         Load the input-hidden weight matrix from the original C word2vec-tool format.
 
@@ -337,6 +353,8 @@ class Word2Vec(utils.SaveLoad):
         so while you can query for word similarity etc., you cannot continue training
         with a model loaded this way.
 
+        `binary` is a boolean indicating whether the data is in binary word2vec format
+        `norm_only` is a boolean indicating whether to only store normalised word2vec vectors in memory
         """
         logger.info("loading projection weights from %s" % (fname))
         with utils.smart_open(fname) as fin:
@@ -362,13 +380,14 @@ class Word2Vec(utils.SaveLoad):
             else:
                 for line_no, line in enumerate(fin):
                     parts = line.split()
-                    assert len(parts) == layer1_size + 1
+                    if len(parts) != layer1_size + 1:
+                        raise ValueError("invalid vector on line %s (is this really the text format?)" % (line_no))
                     word, weights = parts[0], map(REAL, parts[1:])
                     result.vocab[word] = Vocab(index=line_no, count=vocab_size - line_no)
                     result.index2word.append(word)
                     result.syn0[line_no] = weights
         logger.info("loaded %s matrix from %s" % (result.syn0.shape, fname))
-        result.init_sims()
+        result.init_sims(norm_only)
         return result
 
 
@@ -389,13 +408,15 @@ class Word2Vec(utils.SaveLoad):
         """
         self.init_sims()
 
-        if isinstance(positive, basestring) and not negative:
+        if isinstance(positive, string_types) and not negative:
             # allow calls like most_similar('dog'), as a shorthand for most_similar(['dog'])
             positive = [positive]
 
         # add weights for each word, if not already present; default to 1.0 for positive and -1.0 for negative words
-        positive = [(word, 1.0) if isinstance(word, (basestring, ndarray)) else word for word in positive]
-        negative = [(word, -1.0) if isinstance(word, (basestring, ndarray)) else word for word in negative]
+        positive = [(word, 1.0) if isinstance(word, string_types + (ndarray,))
+                                else word for word in positive]
+        negative = [(word, -1.0) if isinstance(word, string_types + (ndarray,))
+                                 else word for word in negative]
 
         # compute the weighted average of all words
         all_words, mean = set(), []
@@ -475,10 +496,27 @@ class Word2Vec(utils.SaveLoad):
         return dot(matutils.unitvec(self[w1]), matutils.unitvec(self[w2]))
 
 
-    def init_sims(self):
-        if getattr(self, 'syn0norm', None) is None:
+    def init_sims(self, replace=False):
+        """
+        Precompute L2-normalized vectors.
+
+        If `replace` is set, forget the original vectors and only keep the normalized
+        ones = saves lots of memory!
+
+        Note that you **cannot continue training** after doing a replace. The model becomes
+        effectively read-only = you can call `most_similar`, `similarity` etc., but not `train`.
+
+        """
+        if getattr(self, 'syn0norm', None) is None or replace:
             logger.info("precomputing L2-norms of word weight vectors")
-            self.syn0norm = (self.syn0 / sqrt((self.syn0 ** 2).sum(-1))[..., newaxis]).astype(REAL)
+            if replace:
+                for i in range(self.syn0.shape[0]):
+                    self.syn0[i, :] /= sqrt((self.syn0[i, :] ** 2).sum(-1))
+                self.syn0norm = self.syn0
+                if hasattr(self, 'syn1'):
+                    del self.syn1
+            else:
+                self.syn0norm = (self.syn0 / sqrt((self.syn0 ** 2).sum(-1))[..., newaxis]).astype(REAL)
 
 
     def accuracy(self, questions, restrict_vocab=30000):
@@ -496,8 +534,9 @@ class Word2Vec(utils.SaveLoad):
         This method corresponds to the `compute-accuracy` script of the original C word2vec.
 
         """
-        ok_vocab = dict(sorted(self.vocab.iteritems(), key=lambda item: -item[1].count)[:restrict_vocab])
-        ok_index = set(v.index for v in ok_vocab.itervalues())
+        ok_vocab = dict(sorted(iteritems(self.vocab),
+                               key=lambda item: -item[1].count)[:restrict_vocab])
+        ok_index = set(v.index for v in itervalues(ok_vocab))
 
         def log_accuracy(section):
             correct, incorrect = section['correct'], section['incorrect']
@@ -550,6 +589,10 @@ class Word2Vec(utils.SaveLoad):
     def __str__(self):
         return "Word2Vec(vocab=%s, size=%s, alpha=%s)" % (len(self.index2word), self.layer1_size, self.alpha)
 
+
+    def save(self, *args, **kwargs):
+        kwargs['ignore'] = kwargs.get('ignore', ['syn0norm']) # don't bother storing the cached normalized vectors
+        super(Word2Vec, self).save(*args, **kwargs)
 
 
 class BrownCorpus(object):
@@ -638,7 +681,7 @@ if __name__ == "__main__":
     # check and process cmdline input
     program = os.path.basename(sys.argv[0])
     if len(sys.argv) < 2:
-        print globals()['__doc__'] % locals()
+        print(globals()['__doc__'] % locals())
         sys.exit(1)
     infile = sys.argv[1]
     outfile = sys.argv[2]

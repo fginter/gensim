@@ -59,7 +59,9 @@ import scipy.linalg
 import scipy.sparse
 from scipy.sparse import sparsetools
 
-from gensim import interfaces, matutils, utils
+from .. import interfaces, matutils, utils
+from .._six import iterkeys
+from .._six.moves import xrange
 
 
 logger = logging.getLogger('gensim.models.lsimodel')
@@ -270,9 +272,9 @@ class LsiModel(interfaces.TransformationABC):
         Example:
 
         >>> lsi = LsiModel(corpus, num_topics=10)
-        >>> print lsi[doc_tfidf] # project some document into LSI space
+        >>> print(lsi[doc_tfidf]) # project some document into LSI space
         >>> lsi.add_documents(corpus2) # update LSI on additional documents
-        >>> print lsi[doc_tfidf]
+        >>> print(lsi[doc_tfidf])
 
         .. [3] http://nlp.fi.muni.cz/~xrehurek/nips/rehurek_nips.pdf
 
@@ -321,7 +323,7 @@ class LsiModel(interfaces.TransformationABC):
                 self.dispatcher = dispatcher
                 self.numworkers = len(dispatcher.getworkers())
                 logger.info("using distributed version with %i workers" % self.numworkers)
-            except Exception, err:
+            except Exception as err:
                 # distributed version was specifically requested, so this is an error state
                 logger.error("failed to initialize distributed LSI (%s)" % err)
                 raise RuntimeError("failed to initialize distributed LSI (%s)" % err)
@@ -531,42 +533,32 @@ class LsiModel(interfaces.TransformationABC):
                    num_words=num_words)
 
 
-    def save(self, fname):
+    def save(self, fname, *args, **kwargs):
         """
-        Override the default `save` (which uses cPickle), because that's
-        too inefficient and cPickle has bugs. Instead, single out the large transformation
-        matrix and store that separately in binary format (that can be directly
-        mmap'ed back in `load()`), under `fname.npy`.
-        """
-        logger.info("storing %s object to %s and %s" % (self.__class__.__name__, fname, fname + '.npy'))
-        if self.projection.u is None:
-            # model not initialized: there is no projection
-            utils.pickle(self, fname)
+        Save the model to file.
 
-        # first, remove the projection from self.__dict__, so it doesn't get pickled
-        u, dispatcher = self.projection.u, self.dispatcher
-        del self.projection.u
-        self.dispatcher = None
-        try:
-            utils.pickle(self, fname) # store projection-less object
-            numpy.save(fname + '.npy', ascarray(u)) # store projection
-        finally:
-            self.projection.u, self.dispatcher = u, dispatcher
+        Large internal arrays may be stored into separate files, with `fname` as prefix.
+
+        """
+        if self.projection is not None:
+            self.projection.save(fname + '.projection', *args, **kwargs)
+        super(LsiModel, self).save(fname, *args, ignore=['projection', 'dispatcher'], **kwargs)
 
 
     @classmethod
-    def load(cls, fname):
+    def load(cls, fname, *args, **kwargs):
         """
         Load a previously saved object from file (also see `save`).
+
+        Large arrays are mmap'ed back as read-only (shared memory).
+
         """
-        logger.info("loading %s object from %s" % (cls.__name__, fname))
-        result = utils.unpickle(fname)
-        ufname = fname + '.npy'
+        kwargs['mmap'] = kwargs.get('mmap', 'r')
+        result = super(LsiModel, cls).load(fname, *args, **kwargs)
         try:
-            result.projection.u = numpy.load(ufname, mmap_mode='r') # load back as read-only
-        except:
-            logger.info("failed to load mmap'ed projection from %s" % ufname)
-        result.dispatcher = None # TODO load back incl. distributed state? will require re-initialization of worker state
+            result.projection = super(LsiModel, cls).load(fname + '.projection', *args, **kwargs)
+        except Exception as e:
+            logging.warning("failed to load projection from %s: %s" % (fname + '.state', e))
         return result
 #endclass LsiModel
 
@@ -586,7 +578,7 @@ def print_debug(id2token, u, s, topics, num_words=10, num_neg=None):
             result.setdefault(topic, []).append((udiff[topic], uvecno))
 
     logger.debug("printing %i+%i salient words" % (num_words, num_neg))
-    for topic in sorted(result.iterkeys()):
+    for topic in sorted(iterkeys(result)):
         weights = sorted(result[topic], key=lambda x: -abs(x[0]))
         _, most = weights[0]
         if u[most, topic] < 0.0: # the most significant word has a negative sign => flip sign of u[most]

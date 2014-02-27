@@ -56,6 +56,28 @@ class TestWord2VecModel(unittest.TestCase):
         model.save(testfile())
         self.models_equal(model, word2vec.Word2Vec.load(testfile()))
 
+    def testPersistenceWord2VecFormat(self):
+        """Test storing/loading the entire model in word2vec format."""
+        model = word2vec.Word2Vec(sentences, min_count=1)
+        model.init_sims()
+        model.save_word2vec_format(testfile(), binary=True)
+        binary_model = word2vec.Word2Vec.load_word2vec_format(testfile(), binary=True, norm_only=False)
+        self.assertTrue(numpy.allclose(model['human'], binary_model['human']))
+        norm_only_model = word2vec.Word2Vec.load_word2vec_format(testfile(), binary=True, norm_only=True)
+        self.assertFalse(numpy.allclose(model['human'], norm_only_model['human']))
+        self.assertTrue(numpy.allclose(model.syn0norm[model.vocab['human'].index], norm_only_model['human']))
+
+    def testLargeMmap(self):
+        """Test storing/loading the entire model."""
+        model = word2vec.Word2Vec(sentences, min_count=1)
+
+        # test storing the internal arrays into separate files
+        model.save(testfile(), sep_limit=0)
+        self.models_equal(model, word2vec.Word2Vec.load(testfile()))
+
+        # make sure mmaping the arrays back works, too
+        self.models_equal(model, word2vec.Word2Vec.load(testfile(), mmap='r'))
+
     def testVocab(self):
         """Test word2vec vocabulary building."""
         corpus = LeeCorpus()
@@ -118,7 +140,7 @@ class TestWord2VecModel(unittest.TestCase):
             sims = model.most_similar('israeli')
             # the exact vectors and therefore similarities may differ, due to different thread collisions
             # so let's test only for top3
-            self.assertTrue('palestinian' in [sims[i][0] for i in xrange(3)])
+            self.assertTrue('palestinian' in [sims[i][0] for i in range(3)])
 
 
     def testRNG(self):
@@ -165,5 +187,5 @@ class TestWord2VecSentenceIterators(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    logging.root.setLevel(logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
     unittest.main()

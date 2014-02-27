@@ -47,9 +47,10 @@ try:
     from scipy.maxentropy import logsumexp # log(sum(exp(x))) that tries to avoid overflow
 except ImportError: # maxentropy has been removed for next release
     from scipy.misc import logsumexp
-from gensim import interfaces, utils
 
 
+from .. import interfaces, utils
+from .._six.moves import xrange
 
 
 def dirichlet_expectation(alpha):
@@ -212,9 +213,9 @@ class LdaModel(interfaces.TransformationABC):
         Example:
 
         >>> lda = LdaModel(corpus, num_topics=100)  # train model
-        >>> print lda[doc_bow] # get topic probability distribution for a document
+        >>> print(lda[doc_bow]) # get topic probability distribution for a document
         >>> lda.update(corpus2) # update the LDA model with additional documents
-        >>> print lda[doc_bow]
+        >>> print(lda[doc_bow])
 
         >>> lda = LdaModel(corpus, num_topics=50, alpha='auto', eval_every=5)  # train asymmetric alpha from data
 
@@ -289,7 +290,7 @@ class LdaModel(interfaces.TransformationABC):
                 self.dispatcher = dispatcher
                 self.numworkers = len(dispatcher.getworkers())
                 logger.info("using distributed version with %i workers" % self.numworkers)
-            except Exception, err:
+            except Exception as err:
                 logger.error("failed to initialize distributed LDA (%s)" % err)
                 raise RuntimeError("failed to initialize distributed LDA (%s)" % err)
 
@@ -702,10 +703,31 @@ class LdaModel(interfaces.TransformationABC):
                 if topicvalue >= eps] # ignore document's topics that have prob < eps
 
 
-    def save(self, fname):
-        dispatcher, self.dispatcher = self.dispatcher, None
+    def save(self, fname, *args, **kwargs):
+        """
+        Save the model to file.
+
+        Large internal arrays may be stored into separate files, with `fname` as prefix.
+
+        """
+        if self.state is not None:
+            self.state.save(fname + '.state', *args, **kwargs)
+        super(LdaModel, self).save(fname, *args, ignore=['state', 'dispatcher'], **kwargs)
+
+
+    @classmethod
+    def load(cls, fname, *args, **kwargs):
+        """
+        Load a previously saved object from file (also see `save`).
+
+        Large arrays are mmap'ed back as read-only (shared memory).
+
+        """
+        kwargs['mmap'] = kwargs.get('mmap', 'r')
+        result = super(LdaModel, cls).load(fname, *args, **kwargs)
         try:
-            super(LdaModel, self).save(fname)
-        finally:
-            self.dispatcher = dispatcher
+            result.state = super(LdaModel, cls).load(fname + '.state', *args, **kwargs)
+        except Exception as e:
+            logging.warning("failed to load state from %s: %s" % (fname + '.state', e))
+        return result
 #endclass LdaModel

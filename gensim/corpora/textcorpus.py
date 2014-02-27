@@ -31,8 +31,9 @@ from __future__ import with_statement
 
 import logging
 
-from gensim import interfaces, utils
-from dictionary import Dictionary
+from .. import interfaces, utils
+from .._six import string_types
+from .dictionary import Dictionary
 
 logger = logging.getLogger('gensim.corpora.textcorpus')
 
@@ -43,7 +44,7 @@ def getstream(input):
     If input is a file-like object, reset it to the beginning with `input.seek(0)`.
     """
     assert input is not None
-    if isinstance(input, basestring):
+    if isinstance(input, string_types):
         # input was a filename: open as text file
         result = open(input)
     else:
