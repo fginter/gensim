@@ -134,6 +134,80 @@ class Vocab(object):
         vals = ['%s:%r' % (key, self.__dict__[key]) for key in sorted(self.__dict__) if not key.startswith('_')]
         return "<" + ', '.join(vals) + ">"
 
+class Vocabulary(dict):
+    """Stores the whole vocabulary. Also the binary tree, if
+    needed. Replaces Word2Vec.vocab. This is useful if we want to
+    maintain several distinct vocabularies."""
+    
+    def __init__(self):
+        self.index2word = []  # map from a word's matrix index (int) to word (string)
+
+    def build_vocab(self, sentences, word2vec, min_count=5):
+        """
+        Build vocabulary from a sequence of sentences (can be a once-only generator stream).
+        Each sentence must be a list of utf8 strings.
+
+        """
+        logger.info("collecting all words and their counts")
+        sentence_no, vocab = -1, {}
+        total_words = 0
+        for sentence_no, sentence in enumerate(sentences):
+            if sentence_no % 10000 == 0:
+                logger.info("PROGRESS: at sentence #%i, processed %i words and %i word types" %
+                    (sentence_no, total_words, len(vocab)))
+            for word in sentence:
+                total_words += 1
+                if word in vocab:
+                    vocab[word].count += 1
+                else:
+                    vocab[word] = Vocab(count=1)
+        logger.info("collected %i word types from a corpus of %i words and %i sentences" %
+            (len(vocab), total_words, sentence_no + 1))
+
+        # assign a unique index to each word
+        self.clear()
+        self.index2word = []
+        for word, v in iteritems(vocab):
+            if v.count >= min_count:
+                v.index = len(self)
+                self.index2word.append(word)
+                self[word] = v
+        logger.info("total %i word types after removing those with count<%s" % (len(self), min_count))
+
+        # add info about each word's Huffman encoding
+        self.create_binary_tree()
+
+    def create_binary_tree(self):
+        """
+        Create a binary Huffman tree using stored vocabulary word counts. Frequent words
+        will have shorter binary codes. Called internally from `build_vocab()`.
+
+        """
+        logger.info("constructing a huffman tree from %i words" % len(self))
+
+        # build the huffman tree
+        heap = self.values()
+        heapq.heapify(heap)
+        for i in xrange(len(self) - 1):
+            min1, min2 = heapq.heappop(heap), heapq.heappop(heap)
+            heapq.heappush(heap, Vocab(count=min1.count + min2.count, index=i + len(self), left=min1, right=min2))
+
+        # recurse over the tree, assigning a binary code to each vocabulary word
+        if heap:
+            max_depth, stack = 0, [(heap[0], [], [])]
+            while stack:
+                node, codes, points = stack.pop()
+                if node.index < len(self):
+                    # leaf node => store its path from the root
+                    node.code, node.point = codes, points
+                    max_depth = max(len(codes), max_depth)
+                else:
+                    # inner node => continue recursion
+                    points = array(list(points) + [node.index - len(self)], dtype=uint32)
+                    stack.append((node.left, array(list(codes) + [0], dtype=uint8), points))
+                    stack.append((node.right, array(list(codes) + [1], dtype=uint8), points))
+
+            logger.info("built huffman tree with maximum node depth %i" % max_depth)
 
 class Word2Vec(utils.SaveLoad):
     """
@@ -164,8 +238,7 @@ class Word2Vec(utils.SaveLoad):
         `workers` = use this many worker threads to train the model (=faster training with multicore machines)
 
         """
-        self.vocab = {}  # mapping from a word (string) to a Vocab object
-        self.index2word = []  # map from a word's matrix index (int) to word (string)
+        self.vocab = Vocabulary()  # mapping from a word (string) to a Vocab object
         self.layer1_size = int(size)
         if size % 4 != 0:
             logger.warning("consider setting layer size to a multiple of 4 for greater performance")
@@ -176,76 +249,9 @@ class Word2Vec(utils.SaveLoad):
         self.workers = workers
         self.min_alpha = min_alpha
         if sentences is not None:
-            self.build_vocab(sentences)
+            self.vocab.build_vocab(sentences,self,self.min_count)
+            self.reset_weights()
             self.train(sentences)
-
-
-    def create_binary_tree(self):
-        """
-        Create a binary Huffman tree using stored vocabulary word counts. Frequent words
-        will have shorter binary codes. Called internally from `build_vocab()`.
-
-        """
-        logger.info("constructing a huffman tree from %i words" % len(self.vocab))
-
-        # build the huffman tree
-        heap = self.vocab.values()
-        heapq.heapify(heap)
-        for i in xrange(len(self.vocab) - 1):
-            min1, min2 = heapq.heappop(heap), heapq.heappop(heap)
-            heapq.heappush(heap, Vocab(count=min1.count + min2.count, index=i + len(self.vocab), left=min1, right=min2))
-
-        # recurse over the tree, assigning a binary code to each vocabulary word
-        if heap:
-            max_depth, stack = 0, [(heap[0], [], [])]
-            while stack:
-                node, codes, points = stack.pop()
-                if node.index < len(self.vocab):
-                    # leaf node => store its path from the root
-                    node.code, node.point = codes, points
-                    max_depth = max(len(codes), max_depth)
-                else:
-                    # inner node => continue recursion
-                    points = array(list(points) + [node.index - len(self.vocab)], dtype=uint32)
-                    stack.append((node.left, array(list(codes) + [0], dtype=uint8), points))
-                    stack.append((node.right, array(list(codes) + [1], dtype=uint8), points))
-
-            logger.info("built huffman tree with maximum node depth %i" % max_depth)
-
-    def build_vocab(self, sentences):
-        """
-        Build vocabulary from a sequence of sentences (can be a once-only generator stream).
-        Each sentence must be a list of utf8 strings.
-
-        """
-        logger.info("collecting all words and their counts")
-        sentence_no, vocab = -1, {}
-        total_words = 0
-        for sentence_no, sentence in enumerate(sentences):
-            if sentence_no % 10000 == 0:
-                logger.info("PROGRESS: at sentence #%i, processed %i words and %i word types" %
-                    (sentence_no, total_words, len(vocab)))
-            for word in sentence:
-                total_words += 1
-                if word in vocab:
-                    vocab[word].count += 1
-                else:
-                    vocab[word] = Vocab(count=1)
-        logger.info("collected %i word types from a corpus of %i words and %i sentences" %
-            (len(vocab), total_words, sentence_no + 1))
-
-        # assign a unique index to each word
-        self.vocab, self.index2word = {}, []
-        for word, v in iteritems(vocab):
-            if v.count >= self.min_count:
-                v.index = len(self.vocab)
-                self.index2word.append(word)
-                self.vocab[word] = v
-        logger.info("total %i word types after removing those with count<%s" % (len(self.vocab), self.min_count))
-
-        # add info about each word's Huffman encoding
-        self.create_binary_tree()
-        self.reset_weights()
 
 
     def train(self, sentences, total_words=None, word_count=0, chunksize=100):
