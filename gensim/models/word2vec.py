@@ -641,21 +641,23 @@ if __name__ == "__main__":
         print globals()['__doc__'] % locals()
         sys.exit(1)
     infile = sys.argv[1]
+    outfile = sys.argv[2]
     from gensim.models.word2vec import Word2Vec  # avoid referencing __main__ in pickle
 
     seterr(all='raise')  # don't ignore numpy errors
 
     # model = Word2Vec(LineSentence(infile), size=200, min_count=5, workers=4)
-    model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=1)
+    model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=4)
+    model.save_word2vec_format(outfile + '.model.bin', binary=True)
 
-    if len(sys.argv) > 3:
-        outfile = sys.argv[3]
-        model.save(outfile + '.model')
-        model.save_word2vec_format(outfile + '.model.bin', binary=True)
-        model.save_word2vec_format(outfile + '.model.txt', binary=False)
+    # if len(sys.argv) > 3:
+    #     outfile = sys.argv[3]
+    #     model.save(outfile + '.model')
+    #     model.save_word2vec_format(outfile + '.model.bin', binary=True)
+    #     model.save_word2vec_format(outfile + '.model.txt', binary=False)
 
-    if len(sys.argv) > 2:
-        questions_file = sys.argv[2]
-        model.accuracy(sys.argv[2])
+    # if len(sys.argv) > 2:
+    #     questions_file = sys.argv[2]
+    #     model.accuracy(sys.argv[2])
 
     logging.info("finished running %s" % program)
