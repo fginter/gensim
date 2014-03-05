@@ -73,9 +73,9 @@ from numpy import exp, dot, zeros, outer, random, dtype, get_include, float32 as
 logger = logging.getLogger("gensim.models.word2vec")
 
 
-from .. import utils, matutils  # utility fnc for pickling, common scipy operations etc
-from .._six import iteritems, itervalues, string_types
-from .._six.moves import xrange
+from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
+from gensim._six import iteritems, itervalues, string_types
+from gensim._six.moves import xrange
 
 
 try:
@@ -329,19 +329,23 @@ class Word2Vec(utils.SaveLoad):
         self.syn0norm = None
 
 
-    def save_word2vec_format(self, fname, binary=False):
+    def save_word2vec_format(self, fname, fvocab=None, binary=False):
         """
         Store the input-hidden weight matrix in the same format used by the original
         C word2vec-tool, for compatibility.
 
         """
+        if fvocab is not None:
+            logger.info("Storing vocabulary in %s" % (fvocab))
+            with utils.smart_open(fvocab, 'wb') as vout:
+                for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
+                    vout.write("%s %s\n" % (word, vocab.count))
         logger.info("storing %sx%s projection weights into %s" % (len(self.vocab), self.layer1_size, fname))
         assert (len(self.vocab), self.layer1_size) == self.syn0.shape
-        with open(fname, 'wb') as fout:
+        with utils.smart_open(fname, 'wb') as fout:
             fout.write("%s %s\n" % self.syn0.shape)
             # store in sorted order: most frequent words at the top
-            for word, vocab in sorted(iteritems(self.vocab),
-                                      key=lambda item: -item[1].count):
+            for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
                 word = utils.to_utf8(word)  # always store in utf8
                 row = self.syn0[vocab.index]
                 if binary:
@@ -351,7 +355,7 @@ class Word2Vec(utils.SaveLoad):
 
 
     @classmethod
-    def load_word2vec_format(cls, fname, binary=False, norm_only=True):
+    def load_word2vec_format(cls, fname, fvocab=None, binary=False, norm_only=True):
         """
         Load the input-hidden weight matrix from the original C word2vec-tool format.
 
@@ -362,6 +366,15 @@ class Word2Vec(utils.SaveLoad):
         `binary` is a boolean indicating whether the data is in binary word2vec format
         `norm_only` is a boolean indicating whether to only store normalised word2vec vectors in memory
         """
+        counts = None
+        if fvocab is not None:
+            logger.info("loading word counts from %s" % (fvocab))
+            counts = {}
+            with utils.smart_open(fvocab) as fin:
+                for line in fin:
+                    word, count = line.strip().split()
+                    counts[word] = int(count)
+
         logger.info("loading projection weights from %s" % (fname))
         with utils.smart_open(fname) as fin:
             header = fin.readline()
@@ -380,7 +393,13 @@ class Word2Vec(utils.SaveLoad):
                             break
                         if ch != '\n':  # ignore newlines in front of words (some binary files have newline, some not)
                             word.append(ch)
-                    result.vocab[word] = Vocab(index=line_no, count=vocab_size - line_no)
+                    if counts is None:
+                        result.vocab[word] = Vocab(index=line_no, count=vocab_size - line_no)
+                    elif counts.has_key(word):
+                        result.vocab[word] = Vocab(index=line_no, count=counts[word])
+                    else:
+                        logger.warning("vocabulary file is incomplete")
+                        result.vocab[word] = Vocab(index=line_no, count=None)
                     result.index2word.append(word)
                     result.syn0[line_no] = fromstring(fin.read(binary_len), dtype=REAL)
             else:
@@ -389,7 +408,13 @@ class Word2Vec(utils.SaveLoad):
                     if len(parts) != layer1_size + 1:
                         raise ValueError("invalid vector on line %s (is this really the text format?)" % (line_no))
                     word, weights = parts[0], map(REAL, parts[1:])
-                    result.vocab[word] = Vocab(index=line_no, count=vocab_size - line_no)
+                    if counts is None:
+                        result.vocab[word] = Vocab(index=line_no, count=vocab_size - line_no)
+                    elif counts.has_key(word):
+                        result.vocab[word] = Vocab(index=line_no, count=counts[word])
+                    else:
+                        logger.warning("vocabulary file is incomplete")
+                        result.vocab[word] = Vocab(index=line_no, count=None)
                     result.index2word.append(word)
                     result.syn0[line_no] = weights
         logger.info("loaded %s matrix from %s" % (result.syn0.shape, fname))
@@ -631,7 +656,7 @@ class Text8Corpus(object):
         # the entire corpus is one gigantic line -- there are no sentence marks at all
         # so just split the sequence of tokens arbitrarily: 1 sentence = 1000 tokens
         sentence, rest, max_sentence_length = [], '', 1000
-        with open(self.fname) as fin:
+        with utils.smart_open(self.fname) as fin:
             while True:
                 text = rest + fin.read(8192)  # avoid loading the entire file (=1 line) into RAM
                 if text == rest:  # EOF
@@ -673,8 +698,9 @@ class LineSentence(object):
                 yield line.split()
         except AttributeError:
             # If it didn't work like a file, use it as a string filename
-            for line in open(self.source):
-                yield line.split()
+            with utils.smart_open(self.source) as fin:
+                for line in fin:
+                    yield line.split()
 
 
 
