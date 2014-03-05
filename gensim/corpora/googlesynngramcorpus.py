@@ -48,7 +48,7 @@ class GoogleSynNGramCorpus(object):
         `dirName` = name of the directory
         `part` = string which specifies which part of the corpus to take. Values are "extended-quadarcs", "biarcs", etc...
         """
-        if part not in ("arcs,biarcs,triarcs,quadarcs,extended-arcs,extended-biarcs,extended-triarcs,extended-quadarcs".split(",")):
+        if part not in ("nodes,arcs,biarcs,triarcs,quadarcs,extended-arcs,extended-biarcs,extended-triarcs,extended-quadarcs".split(",")):
             raise ValueError("Unknown part parameter. Use arcs,biarcs,...,extended-arcs,extended-biarcs.")
         self.part=part
         self.fileNames=sorted(glob.glob(os.path.join(dirName,part+".*-of-*.gz")))
@@ -101,6 +101,36 @@ class GoogleSynNGramCorpus(object):
             assert tokens[0].token==rootToken and tokens[0].governorIDX==0 and tokens[1].governorIDX in (1,2), ngramLine #any surprises somewhere?
             yield (tokens[0].token,tokens[1].token,tokens[1].dType,count)
 
+    def iterTokens(self,fileCount=-1):
+        """
+        Return a generator over (token,count) tuples. This only works if part=="nodes"
+        `fileCount` = How many files to visit? Set to -1 for all (default)
+        """
+        if self.part not in (u"nodes",):
+            raise ValueError("Tokens can be generated only from the 'nodes' part of the corpus. See GoogleSynNGramCorpus.__init__()")
+        currentToken=None
+        currentCount=0
+        for ngramLine in self.lines(fileCount):
+            #for every token, we'll have a series of lines like this:
+            #bookers<TAB>bookers/NNP/ROOT/0<TAB>count<TAB>...      1882,1...
+            token,specs,count,rest=ngramLine.split(u"\t",3)
+            if specs.count(u" ")!=0: #several nodes, ignore. TODO: is this supposed to be skipped or processed?
+                continue
+            count=int(count)
+            if currentToken==token: #...still continuing the current token?
+                currentCount+=count
+            elif currentToken==None: #First one?
+                currentToken=token
+                currentCount=count
+            else: #New one!
+                yield currentToken, currentCount
+                currentToken=token
+                currentCount=count
+        else: #End of file
+            if currentToken!=None:
+                yield currentToken, currentCount #Remember to yield the last one
+        
+
 if __name__=="__main__":
     #Quick test only
     import sys
@@ -109,5 +139,9 @@ if __name__=="__main__":
 #    for t in C.depTypes(3):
 #        print t
     C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/arcs","arcs")
-    for g,d,t,c in C.iterGD():
-        print g.encode("utf-8"),d.encode("utf-8"),t,c
+#    for g,d,t,c in C.iterGD():
+#        print g.encode("utf-8"),d.encode("utf-8"),t,c
+    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/nodes","nodes")
+    for t,c in C.iterTokens():
+        print t.encode("utf-8"),c
+
