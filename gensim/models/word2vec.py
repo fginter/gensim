@@ -62,6 +62,7 @@ import os
 import heapq
 import time
 import threading
+import os.path
 try:
     from queue import Queue
 except ImportError:
@@ -76,6 +77,8 @@ logger = logging.getLogger("gensim.models.word2vec")
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
 from gensim._six import iteritems, itervalues, string_types
 from gensim._six.moves import xrange
+import itertools
+from gensim.corpora.googlesynngramcorpus import  GoogleSynNGramCorpus
 
 
 try:
@@ -84,6 +87,9 @@ try:
     pyximport.install(setup_args={"include_dirs": get_include()})
     from word2vec_inner import train_sentence, FAST_VERSION
 except:
+    import traceback
+    traceback.print_exc()
+    
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
 
@@ -141,6 +147,26 @@ class Vocabulary(dict):
     
     def __init__(self):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
+
+    def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
+        """
+        Build vocabulary from an iterator which produces ready-made
+        (word,count) tuples where each word is generated only
+        once. For instance corpora/googlesynngramcorpus method
+        iterTokens() generates this stream by reading the nodes.*
+        files.  Basically, we're reading in a unigram model with
+        counts.
+        """
+
+        self.clear()
+        self.index2word=[]
+        for counter,(word,count) in enumerate(words):
+            if count<min_count:
+                continue
+            self.index2word.append(word)
+            self[word]=Vocab(count=count)
+
+        logger.info("collected %i word types from a stream of %i unigrams" % (len(self), counter+1))
 
     def build_vocab(self, sentences, word2vec, min_count=5):
         """
@@ -253,6 +279,32 @@ class Word2Vec(utils.SaveLoad):
             self.reset_weights()
             self.train(sentences)
 
+
+    def trainOnSynNGrams(self, corpusLoc, chunksize=10000):
+        """
+        Train the (unitialized) model on google syntactic ngram corpus
+        located in the directory corpusLoc. This should have a
+        subdirectory for every part of the corpus separately
+        (e.g. corpusLoc/nodes, corpusLoc/arcs). We only need nodes and
+        arcs for now. 
+
+        `chunksize` =  how many n-grams constitute a training batch for one worker thread
+        """
+        if FAST_VERSION < 0:
+            import warnings
+            warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+        
+        UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
+        self.vocab=Vocabulary()
+        self.vocab.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(2),self.min_count)
+        
+        self.reset_weights()
+
+        logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+        
+        
+        
+        
 
     def train(self, sentences, total_words=None, word_count=0, chunksize=100):
         """
@@ -711,19 +763,20 @@ if __name__ == "__main__":
     logging.info("using optimization %s" % FAST_VERSION)
 
     # check and process cmdline input
-    program = os.path.basename(sys.argv[0])
-    if len(sys.argv) < 2:
-        print(globals()['__doc__'] % locals())
-        sys.exit(1)
-    infile = sys.argv[1]
-    outfile = sys.argv[2]
+    # program = os.path.basename(sys.argv[0])
+    # if len(sys.argv) < 2:
+    #     print(globals()['__doc__'] % locals())
+    #     sys.exit(1)
+    # infile = sys.argv[1]
+    # outfile = sys.argv[2]
     from gensim.models.word2vec import Word2Vec  # avoid referencing __main__ in pickle
 
     seterr(all='raise')  # don't ignore numpy errors
 
-    # model = Word2Vec(LineSentence(infile), size=200, min_count=5, workers=4)
-    model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=4)
-    model.save_word2vec_format(outfile + '.model.bin', binary=True)
+    model = Word2Vec(None, size=200, min_count=5, workers=4)
+    model.trainOnSynNGrams("/usr/share/ParseBank/google-syntax-ngrams", chunksize=10000)
+    # model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=4)
+    # model.save_word2vec_format(outfile + '.model.bin', binary=True)
 
     # if len(sys.argv) > 3:
     #     outfile = sys.argv[3]
