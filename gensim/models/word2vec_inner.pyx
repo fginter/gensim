@@ -122,6 +122,10 @@ cdef void fast_sentence2(
 
 DEF MAX_SENTENCE_LEN = 1000
 
+def train_synngram(model, ngram, alpha, _work):
+    return 1
+
+
 def train_sentence(model, sentence, alpha, _work):
     cdef REAL_t *syn0 = <REAL_t *>(np.PyArray_DATA(model.syn0))
     cdef REAL_t *syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))

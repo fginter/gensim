@@ -85,7 +85,7 @@ try:
     # try to compile and use the faster cython version
     import pyximport
     pyximport.install(setup_args={"include_dirs": get_include()})
-    from word2vec_inner import train_sentence, FAST_VERSION
+    from word2vec_inner import train_sentence, train_synngram, FAST_VERSION
 except:
     import traceback
     traceback.print_exc()
@@ -280,29 +280,87 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, corpusLoc, chunksize=10000):
+    def trainOnSynNGrams(self, corpusLoc, chunksize=10000, part_subdirs=True):
         """
         Train the (unitialized) model on google syntactic ngram corpus
-        located in the directory corpusLoc. This should have a
-        subdirectory for every part of the corpus separately
-        (e.g. corpusLoc/nodes, corpusLoc/arcs). We only need nodes and
+        located in the directory corpusLoc. We only need nodes and
         arcs for now. 
 
         `chunksize` =  how many n-grams constitute a training batch for one worker thread
+        `part_subdirs` = True if corpusLoc has a subdirectory for every part of the corpus separately (e.g. corpusLoc/nodes, corpusLoc/arcs), False if you have all the data downloaded in one place.
+        
         """
         if FAST_VERSION < 0:
             import warnings
             warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
-        
-        UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
+
+        #Opens the Google Syn NGram corpus -> this is extremely lightweight, nothing is read at this point
+        #the objects simply gather the filenames, etc
+        if part_subdirs:
+            UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
+            ArcC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"arcs"),"arcs")
+        else:
+            UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
+            ArcC=GoogleSynNGramCorpus(corpusLoc,"arcs")
+
+        #Build the vocabulary from the "nodes" part of the corpus
         self.vocab=Vocabulary()
         self.vocab.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(2),self.min_count)
         
         self.reset_weights()
-
         logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+
+        #...the bit below is copied from train() and modified to work with the n-grams
+        jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+        lock = threading.Lock()  # for shared state (=number of ngrams trained so far, log reports...)
+
+        ngram_count=[0]
+        start, next_report = time.time(), [1.0]
+
+        def worker_train():
+            """Train the model, lifting lists of ngrams from the jobs queue."""
+            work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
+
+            while True:
+                job = jobs.get()
+                if job is None:  # data finished, exit
+                    break
+                # update the learning rate before every job
+                #alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * word_count[0] / total_words))
+                alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
+                # how many words did we train on? out-of-vocabulary (unknown) words do not count
+                for ngram in job: #ngram is (gov,dep,dType,count) tuple
+                    train_synngram(self,ngram,alpha,work)
+                with lock:
+                    ngram_count[0] += len(job)
+                    elapsed = time.time() - start
+                    if elapsed >= next_report[0]:
+                        logger.info("PROGRESS: %i words finished. Running at %.0f ngrams/s."%(ngram_count[0], ngram_count[0]/elapsed))
+                        next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
+
+        workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
+        for thread in workers:
+            thread.daemon = True  # make interrupting the process with ctrl+c easier
+            thread.start()
         
-        
+        # convert input strings to Vocab objects (or None for OOV words), and start filling the jobs queue
+        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,count) for (gov,dep,dType,count) in ArcC.iterGD())
+        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+            jobs.put(job)
+        logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
+        for _ in xrange(self.workers):
+            jobs.put(None)  # give the workers heads up that they can finish -- no more work!
+
+        for thread in workers:
+            thread.join()
+
+        elapsed = time.time() - start
+        logger.info("training on %i ngrams took %.1fs, %.0f ngram/s" %
+            (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
+
+        return ngram_count[0]
+
         
         
 
@@ -758,7 +816,7 @@ class LineSentence(object):
 
 # Example: ./word2vec.py ~/workspace/word2vec/text8 ~/workspace/word2vec/questions-words.txt ./text8
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
+    logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.DEBUG)
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
 
@@ -773,7 +831,7 @@ if __name__ == "__main__":
 
     seterr(all='raise')  # don't ignore numpy errors
 
-    model = Word2Vec(None, size=200, min_count=5, workers=4)
+    model = Word2Vec(None, size=200, min_count=5, workers=20)
     model.trainOnSynNGrams("/usr/share/ParseBank/google-syntax-ngrams", chunksize=10000)
     # model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=4)
     # model.save_word2vec_format(outfile + '.model.bin', binary=True)
