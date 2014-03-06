@@ -17,7 +17,6 @@ This is currently in n-gram based word2vec training. Maybe it will be useful els
 from __future__ import with_statement
 
 import logging
-import csv
 import itertools
 import os.path
 import glob
