@@ -29,35 +29,45 @@ class CoNLLCorpus(object):
             raise ValueError("You need to initialize CoNLLCorpus with a fileName. It can be gzipped (.gz suffix)")
         self.fName=fName
 
-    def iterSentences(self,lowercase_all=True,max_count=-1):
-        """Generates lists of tokens"""
-        if self.fName.endswith(".gz"): #...gzipped
-            fIN=codecs.getreader("utf-8")(gzip.open(self.fName,"r"))
+    def iterSentences(self,column=1,lowercase_all=True,max_count=-1):
+        """Generates lists of tokens from a CoNLL file. UTF8 encoding pretty much assumed.
+        `column` = which column holds the tokens? 1 is the default, but you might also want 2 or 3 for lemma
+        `lowercase_all` = should we lowercase all tokens for you?
+        `max_count` = how many sentences to read?
+        """
+        if lowercase_all:
+            procToken=lambda t: t.lower()
         else:
-            fIN=codecs.open(self.fName,"r","utf-8")
-        sentCounter=0
-        currSentence=[]
-        for line in fIN:
-            if line.startswith(u"1\t"): #new sentence
+            procToken=lambda t: t
+
+        with open(self.fName,"rb") as fIN:
+            if self.fName.endswith(".gz"): #...gzipped
+                dataIN=codecs.getreader("utf-8")(gzip.GzipFile(fileobj=fIN))
+            else:
+                dataIN=codecs.getreader("utf-8")(fIN)
+            sentCounter=0
+            currSentence=[]
+            for line in dataIN:
+                if line.startswith(u"1\t"): #new sentence
+                    if currSentence:
+                        yield currSentence
+                        sentCounter+=1
+                        if max_count>=0 and sentCounter>=max_count:
+                            break #Done
+                    currSentence=[]
+                if line and line[0].isdigit(): #Looks like a normal line, anything else is some junk or empty line -> ignore
+                    cols=line.split(u"\t",column+1) #split as many times as needed to get to the column
+                    currSentence.append(procToken(cols[column]))
+            else:
                 if currSentence:
                     yield currSentence
-                    sentCounter+=1
-                    if max_count>=0 and sentCounter>=max_count:
-                        break #Done
-                currSentence=[]
-            if line and line[0].isdigit(): #Looks like a normal line, anything else is some junk or empty line -> ignore
-                wordID,token,_=line.split(u"\t",2)
-                currSentence.append(token)
-        else:
-            if currSentence:
-                yield currSentence
 
 if __name__=="__main__":
     #Quick test only
     import sys
 
     C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
-    for s in C.iterSentences(max_count=30):
+    for s in C.iterSentences(column=4,lowercase_all=True,max_count=30):
         print (u" ".join(s).encode("utf-8"))
 
 
