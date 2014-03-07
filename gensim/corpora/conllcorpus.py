@@ -55,6 +55,7 @@ class CoNLLCorpus(object):
         if not isinstance(fName,basestring):
             raise ValueError("You need to initialize CoNLLCorpus with a fileName. It can be gzipped (.gz suffix)")
         self.fName=fName
+        self.currSentenceIDX=0 #Maintained by _parseSentences, so we always know where we're reading
 
     def iterSentences(self,column=1,lowercase_all=True,max_count=-1,threads=2):
         """Generates lists of tokens from a CoNLL file. UTF8 encoding pretty much assumed.
@@ -79,14 +80,14 @@ class CoNLLCorpus(object):
             dataIN=openGZ(self.fName)
         else:
             dataIN=open(self.fName,"rt")
-        sentCounter=0
+        self.currSentenceIDX=0
         currSentence=[]
         for line in dataIN:
             if line.startswith("1\t"): #new sentence
                 if currSentence:
                     yield currSentence
-                    sentCounter+=1
-                    if max_count>=0 and sentCounter>=max_count:
+                    self.currSentenceIDX+=1
+                    if max_count>=0 and self.currSentenceIDX>=max_count:
                         break #Done
                 currSentence=[]
             if line and line[0].isdigit(): #Looks like a normal line, anything else is some junk or empty line -> ignore
@@ -110,7 +111,7 @@ class CoNLLCorpus(object):
         `max_count` = how many sentences (not dependencies!) should be read? -1 for all
         `threads` = if we succeed in opening a gzipped file using a multi-threaded gzip, how many threads can we give it?
         """
-        for sent in self._parseSentences(tokenColum, headColumn, deprelColumn,lowercase_all,max_count,threads=threads):
+        for sent in self._parseSentences(tokenColumn, headColumn, deprelColumn,lowercase_all,max_count,threads=threads):
             for dependent, headPos, depType in sent: #headPos is 0-based index into sent to the head token. -1 for root
                 if headPos==-1:
                     continue #TODO: How should I deal with the root?

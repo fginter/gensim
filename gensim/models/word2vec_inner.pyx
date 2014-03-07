@@ -121,9 +121,82 @@ cdef void fast_sentence2(
 
 
 DEF MAX_SENTENCE_LEN = 1000
+DEF MAX_NGRAMLIST_LEN = 50000
 
-def train_synngram(model, ngram, alpha, _work):
-    return 1
+#ngrams: list of (governor,dependent,dtype,weight) tuples
+#direction 0 gov low dep up, 1 dep low gov up, 2 both
+def train_synngram_list(model, ngrams, alpha, _work, direction):
+    cdef REAL_t *syn0 = <REAL_t *>(np.PyArray_DATA(model.syn0))
+    cdef REAL_t *syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
+    cdef REAL_t *work
+    cdef np.uint32_t word2_index
+    cdef REAL_t _alpha = alpha
+    cdef int size = model.layer1_size
+
+    cdef np.uint32_t *points_governors[MAX_NGRAMLIST_LEN]
+    cdef np.uint32_t *points_dependents[MAX_NGRAMLIST_LEN]
+    cdef np.uint8_t *codes_governors[MAX_NGRAMLIST_LEN]
+    cdef np.uint8_t *codes_dependents[MAX_NGRAMLIST_LEN]
+    cdef int codelens_governors[MAX_NGRAMLIST_LEN]
+    cdef int codelens_dependents[MAX_NGRAMLIST_LEN]
+    cdef np.uint32_t indexes_governors[MAX_NGRAMLIST_LEN]
+    cdef np.uint32_t indexes_dependents[MAX_NGRAMLIST_LEN]
+
+    cdef int ngram_list_len
+    cdef int dir=direction
+
+
+    cdef int i, j, k
+    cdef long result = 0
+
+    # convert Python structures to primitive types, so we can release the GIL
+    work = <REAL_t *>np.PyArray_DATA(_work)
+    ngram_list_len = <int>min(MAX_NGRAMLIST_LEN, len(ngrams))
+    for i in range(ngram_list_len):
+        governor = ngrams[i][0]
+        if governor is None:
+            codelens_governors[i] = 0
+        else:
+            indexes_governors[i] = governor.index
+            codelens_governors[i] = <int>len(governor.code)
+            codes_governors[i] = <np.uint8_t *>np.PyArray_DATA(governor.code)
+            points_governors[i] = <np.uint32_t *>np.PyArray_DATA(governor.point)
+        dependent = ngrams[i][0]
+        if dependent is None:
+            codelens_dependents[i] = 0
+        else:
+            indexes_dependents[i] = dependent.index
+            codelens_dependents[i] = <int>len(dependent.code)
+            codes_dependents[i] = <np.uint8_t *>np.PyArray_DATA(dependent.code)
+            points_dependents[i] = <np.uint32_t *>np.PyArray_DATA(dependent.point)
+        if governor is not None and dependent is not None:
+            result += 1
+
+    # release GIL & train on the ngrams
+    with nogil:
+        for i in range(ngram_list_len):
+            if codelens_governors[i] == 0 or codelens_dependents[i] == 0:
+                continue
+#            j = i - window + reduced_windows[i]
+#            if j < 0:
+#                j = 0
+#            k = i + window + 1 - reduced_windows[i]
+#            if k > sentence_len:
+#                k = sentence_len
+#            for j in range(j, k):
+#                if j == i or codelens[j] == 0:
+#                    continue
+            #What a bloody hack!
+            if dir==0:
+                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha, work)
+            elif dir==1:
+                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha, work)
+            elif dir==2:
+                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha, work)
+                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha, work)
+
+    return result
+    
 
 
 def train_sentence(model, sentence, alpha, _work):

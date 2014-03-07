@@ -85,7 +85,7 @@ try:
     # try to compile and use the faster cython version
     import pyximport
     pyximport.install(setup_args={"include_dirs": get_include()})
-    from word2vec_inner import train_sentence, train_synngram, FAST_VERSION
+    from word2vec_inner import train_sentence, train_synngram_list, FAST_VERSION
 except:
     import traceback
     traceback.print_exc()
@@ -147,6 +147,7 @@ class Vocabulary(dict):
     
     def __init__(self):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
+        self.total_sentences = 0 # this is important to know when training, so we can gauge our progress and adjust alpha
 
     def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
         """
@@ -189,6 +190,7 @@ class Vocabulary(dict):
                     vocab[word] = Vocab(count=1)
         logger.info("collected %i word types from a corpus of %i words and %i sentences" %
             (len(vocab), total_words, sentence_no + 1))
+        self.total_sentences=sentence_no+1
 
         # assign a unique index to each word
         self.clear()
@@ -361,6 +363,71 @@ class Word2Vec(utils.SaveLoad):
 
         return ngram_count[0]
 
+
+
+    def trainOnCoNLLSynNGrams(self, corpus, chunksize=10000, direction=0):
+        """
+        Train the model on ngrams from a conll corpus. Vocabulary should already be initialized at this point
+
+        `chunksize` =  how many n-grams constitute a training batch for one worker thread
+        
+        """
+        if FAST_VERSION < 0:
+            import warnings
+            warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+
+        self.reset_weights()
+        logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+
+        #...the bit below is copied from train() and modified to work with the n-grams
+        jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+        lock = threading.Lock()  # for shared state (=number of ngrams trained so far, log reports...)
+
+        ngram_count=[0]
+        start, next_report = time.time(), [1.0]
+
+        def worker_train():
+            """Train the model, lifting lists of ngrams from the jobs queue."""
+            work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
+
+            while True:
+                progress,job = jobs.get()
+                if job is None:  # data finished, exit
+                    break
+                # update the learning rate before every job
+                alpha = max(self.min_alpha, self.alpha * (1.0 - progress))
+                #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
+                # how many words did we train on? out-of-vocabulary (unknown) words do not count
+                train_synngram_list(self,job,alpha,work,direction)
+                with lock:
+                    ngram_count[0] += len(job)
+                    elapsed = time.time() - start
+                    if elapsed >= next_report[0]:
+                        logger.info("PROGRESS: %i (%.1f%%) ngrams finished. Running at %.0f ngrams/s."%(ngram_count[0], progress*100, ngram_count[0]/elapsed))
+                        next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
+
+        workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
+        for thread in workers:
+            thread.daemon = True  # make interrupting the process with ctrl+c easier
+            thread.start()
+        
+        # convert input ngram items to Vocab objects (or None for OOV words), and start filling the jobs queue
+        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,weight) for (gov,dep,dType,weight) in corpus.iterDeps())
+        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+            jobs.put((float(corpus.currSentenceIDX)/self.vocab.total_sentences,job))
+        logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
+        for _ in xrange(self.workers):
+            jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
+
+        for thread in workers:
+            thread.join()
+
+        elapsed = time.time() - start
+        logger.info("training on %i ngrams took %.1fs, %.0f ngram/s" %
+            (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
+
+        return ngram_count[0]
         
         
 
@@ -812,29 +879,50 @@ class LineSentence(object):
                 for line in fin:
                     yield line.split()
 
+def test_train_conll():
+    from gensim.corpora.conllcorpus import  CoNLLCorpus
+    C=CoNLLCorpus("/home/ginter/pbank.tiny.conll09")
+    m=Word2Vec(None, size=200, min_count=5, workers=10)
+    m.vocab.build_vocab(C.iterSentences(max_count=-1),m)
+    m.reset_weights()
+    m.train(C.iterSentences())
+    m.save_word2vec_format("gsim_w2v_wforms3.bin",binary=True)
+
+def test_train_conll_syn():
+    from gensim.corpora.conllcorpus import  CoNLLCorpus
+    #C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
+    C=CoNLLCorpus("/home/ginter/pbank.verytiny.conll09")
+    m=Word2Vec(None, size=200, min_count=5, workers=10)
+    m.vocab.build_vocab(C.iterSentences(max_count=-1),m)
+    for direction in (0,1,2):
+        m.trainOnCoNLLSynNGrams(C, chunksize=50000,direction=direction)
+        m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
 
-# Example: ./word2vec.py ~/workspace/word2vec/text8 ~/workspace/word2vec/questions-words.txt ./text8
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
+    
+    #test_train_conll()
+    test_train_conll_syn()
+    sys.exit()
 
     # check and process cmdline input
-    # program = os.path.basename(sys.argv[0])
-    # if len(sys.argv) < 2:
-    #     print(globals()['__doc__'] % locals())
-    #     sys.exit(1)
-    # infile = sys.argv[1]
-    # outfile = sys.argv[2]
+    program = os.path.basename(sys.argv[0])
+    if len(sys.argv) < 2:
+        print(globals()['__doc__'] % locals())
+        sys.exit(1)
+    infile = sys.argv[1]
+    outfile = sys.argv[2]
     from gensim.models.word2vec import Word2Vec  # avoid referencing __main__ in pickle
 
     seterr(all='raise')  # don't ignore numpy errors
 
-    model = Word2Vec(None, size=200, min_count=5, workers=20)
-    model.trainOnSynNGrams("/usr/share/ParseBank/google-syntax-ngrams", chunksize=10000)
-    # model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=4)
-    # model.save_word2vec_format(outfile + '.model.bin', binary=True)
+    #model = Word2Vec(None, size=200, min_count=5, workers=20)
+    #model.trainOnSynNGrams("/usr/share/ParseBank/google-syntax-ngrams", chunksize=10000)
+    model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=12)
+    model.save_word2vec_format(outfile + '.model.bin', binary=True)
 
     # if len(sys.argv) > 3:
     #     outfile = sys.argv[3]
