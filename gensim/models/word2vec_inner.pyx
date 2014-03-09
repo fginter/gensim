@@ -161,7 +161,7 @@ def train_synngram_list(model, ngrams, alpha, _work, direction):
             codelens_governors[i] = <int>len(governor.code)
             codes_governors[i] = <np.uint8_t *>np.PyArray_DATA(governor.code)
             points_governors[i] = <np.uint32_t *>np.PyArray_DATA(governor.point)
-        dependent = ngrams[i][0]
+        dependent = ngrams[i][1]
         if dependent is None:
             codelens_dependents[i] = 0
         else:
