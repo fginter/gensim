@@ -133,6 +133,7 @@ def train_synngram_list(model, ngrams, alpha, _work, direction):
     cdef REAL_t _alpha = alpha
     cdef int size = model.layer1_size
 
+    cdef REAL_t counts[MAX_NGRAMLIST_LEN]
     cdef np.uint32_t *points_governors[MAX_NGRAMLIST_LEN]
     cdef np.uint32_t *points_dependents[MAX_NGRAMLIST_LEN]
     cdef np.uint8_t *codes_governors[MAX_NGRAMLIST_LEN]
@@ -144,7 +145,7 @@ def train_synngram_list(model, ngrams, alpha, _work, direction):
 
     cdef int ngram_list_len
     cdef int dir=direction
-
+    cdef REAL_t cnt
 
     cdef int i, j, k
     cdef long result = 0
@@ -153,6 +154,7 @@ def train_synngram_list(model, ngrams, alpha, _work, direction):
     work = <REAL_t *>np.PyArray_DATA(_work)
     ngram_list_len = <int>min(MAX_NGRAMLIST_LEN, len(ngrams))
     for i in range(ngram_list_len):
+        counts[i]=1.0-(1.0/(<REAL_t> ngrams[i][3]+1))
         governor = ngrams[i][0]
         if governor is None:
             codelens_governors[i] = 0
@@ -188,12 +190,12 @@ def train_synngram_list(model, ngrams, alpha, _work, direction):
 #                    continue
             #What a bloody hack!
             if dir==0:
-                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha, work)
+                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha*counts[i], work)
             elif dir==1:
-                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha, work)
+                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha*counts[i], work)
             elif dir==2:
-                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha, work)
-                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha, work)
+                fast_sentence(points_dependents[i], codes_dependents[i], codelens_dependents[i], syn0, syn1, size, indexes_governors[i], _alpha*counts[i], work)
+                fast_sentence(points_governors[i], codes_governors[i], codelens_governors[i], syn0, syn1, size, indexes_dependents[i], _alpha*counts[i], work)
 
     return result
     

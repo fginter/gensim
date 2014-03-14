@@ -152,22 +152,30 @@ class Vocabulary(dict):
     def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
         """
         Build vocabulary from an iterator which produces ready-made
-        (word,count) tuples where each word is generated only
+        (word,count) tuples. We do *not* assume that each word is generated only
         once. For instance corpora/googlesynngramcorpus method
         iterTokens() generates this stream by reading the nodes.*
         files.  Basically, we're reading in a unigram model with
-        counts.
+        counts, but we allow a word to show up several times.
         """
-
         self.clear()
-        self.index2word=[]
+        vocab={}
         for counter,(word,count) in enumerate(words):
-            if count<min_count:
+            if word in vocab:
+                vocab[word].count += count
+            else:
+                vocab[word] = Vocab(count=count)
+        logger.info("collected %i word types from a stream of %i unigrams, will remove rare ones now" % (len(vocab), counter+1))
+        self.index2word=[]
+        for word, v in vocab.iteritems():
+            if v.count<min_count:
                 continue
+            v.index=len(self)
             self.index2word.append(word)
-            self[word]=Vocab(count=count)
+            self[word]=v
 
         logger.info("collected %i word types from a stream of %i unigrams" % (len(self), counter+1))
+        self.create_binary_tree()
 
     def build_vocab(self, sentences, word2vec, min_count=5):
         """
@@ -282,7 +290,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, corpusLoc, chunksize=10000, part_subdirs=True):
+    def trainOnSynNGrams(self, corpusLoc, chunksize=1000, part_subdirs=True, direction=0):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -295,6 +303,7 @@ class Word2Vec(utils.SaveLoad):
         if FAST_VERSION < 0:
             import warnings
             warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+            sys.exit()
 
         #Opens the Google Syn NGram corpus -> this is extremely lightweight, nothing is read at this point
         #the objects simply gather the filenames, etc
@@ -306,8 +315,9 @@ class Word2Vec(utils.SaveLoad):
             ArcC=GoogleSynNGramCorpus(corpusLoc,"arcs")
 
         #Build the vocabulary from the "nodes" part of the corpus
-        self.vocab=Vocabulary()
-        self.vocab.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(2),self.min_count)
+        if self.vocab==None:
+            self.vocab=Vocabulary()
+            self.vocab.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),self.min_count)
         
         self.reset_weights()
         logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
@@ -324,20 +334,19 @@ class Word2Vec(utils.SaveLoad):
             work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
 
             while True:
-                job = jobs.get()
+                progress,job = jobs.get()
                 if job is None:  # data finished, exit
                     break
                 # update the learning rate before every job
-                #alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * word_count[0] / total_words))
-                alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
+                alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * progress))
+                #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
                 # how many words did we train on? out-of-vocabulary (unknown) words do not count
-                for ngram in job: #ngram is (gov,dep,dType,count) tuple
-                    train_synngram(self,ngram,alpha,work)
+                train_synngram_list(self,job,alpha,work,direction)
                 with lock:
                     ngram_count[0] += len(job)
                     elapsed = time.time() - start
                     if elapsed >= next_report[0]:
-                        logger.info("PROGRESS: %i words finished. Running at %.0f ngrams/s."%(ngram_count[0], ngram_count[0]/elapsed))
+                        logger.info("PROGRESS: %.2f%% finished. Running at %.0f ngrams/s."%(progress*100.0, ngram_count[0]/elapsed))
                         next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
 
         workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
@@ -349,10 +358,10 @@ class Word2Vec(utils.SaveLoad):
         no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,count) for (gov,dep,dType,count) in ArcC.iterGD())
         for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
             logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
-            jobs.put(job)
+            jobs.put((ArcC.progress(),job))
         logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
         for _ in xrange(self.workers):
-            jobs.put(None)  # give the workers heads up that they can finish -- no more work!
+            jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
 
         for thread in workers:
             thread.join()
@@ -888,24 +897,39 @@ def test_train_conll():
     m.train(C.iterSentences())
     m.save_word2vec_format("gsim_w2v_wforms3.bin",binary=True)
 
+def test_train_googlesyn():
+    from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+    m=Word2Vec(None, alpha=0.2, size=200, min_count=5, workers=10)
+    m.vocab=None
+    a=0.01
+    for r in range(10):
+        m.alpha=a
+        m.min_alpha=m.alpha/100.0
+        logger.info("Training with a=%f   mina=%f"%(m.alpha,m.min_alpha))
+        m.trainOnSynNGrams("/mnt/ssd/w2v_sng_training", part_subdirs=False, direction=2)
+        m.save_word2vec_format("gsim_w2v_wforms_fin_synngr-dir2-a%f.bin"%a,binary=True)
+        a*=4
+
 def test_train_conll_syn():
     from gensim.corpora.conllcorpus import  CoNLLCorpus
-    #C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
-    C=CoNLLCorpus("/home/ginter/pbank.verytiny.conll09")
+    C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
+    #C=CoNLLCorpus("/home/ginter/pbank.tiny.conll09")
     m=Word2Vec(None, size=200, min_count=5, workers=10)
     m.vocab.build_vocab(C.iterSentences(max_count=-1),m)
     for direction in (0,1,2):
-        m.trainOnCoNLLSynNGrams(C, chunksize=50000,direction=direction)
+        m.trainOnCoNLLSynNGrams(C, chunksize=30000,direction=direction)
         m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
 
 if __name__ == "__main__":
+    import os
+    os.nice(19)
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
     
     #test_train_conll()
-    test_train_conll_syn()
+    test_train_googlesyn()
     sys.exit()
 
     # check and process cmdline input
