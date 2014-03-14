@@ -101,7 +101,10 @@ class GoogleSynNGramCorpus(object):
             raise ValueError("GDPairs can be generated only from the 'arcs' part of the corpus. See GoogleSynNGramCorpus.__init__()")
         for ngramLine in self.lines(fileCount):
             #includes<TAB>includes/VBZ/rcmod/0 telecom/NNP/dobj/1<TAB>count<TAB>...
-            rootToken,dependency,count,rest=ngramLine.split(u"\t",3)
+            try:
+                rootToken,dependency,count,rest=ngramLine.split(u"\t",3)
+            except ValueError:
+                rootToken,dependency,count=ngramLine.split(u"\t",2)
             count=int(count)
             tokens=[SynTreeNode(t) for t in dependency.split()]
             if len(tokens)>2: #This involves one of the functional words, skip (we will get the relevant deps elsewhere in the data)
@@ -122,7 +125,10 @@ class GoogleSynNGramCorpus(object):
         for ngramLine in self.lines(fileCount):
             #for every token, we'll have a series of lines like this:
             #bookers<TAB>bookers/NNP/ROOT/0<TAB>count<TAB>...      1882,1...
-            token,specs,count,rest=ngramLine.split(u"\t",3)
+            try:
+                token,specs,count,rest=ngramLine.split(u"\t",3)
+            except ValueError:
+                token,specs,count=ngramLine.split(u"\t",2)
             if specs.count(u" ")!=0: #several nodes, ignore. TODO: is this supposed to be skipped or processed?
                 continue
             count=int(count)
