@@ -53,12 +53,20 @@ class GoogleSynNGramCorpus(object):
         self.fileNames=sorted(glob.glob(os.path.join(dirName,part+".*-of-*.gz")))
         if not self.fileNames:
             raise ValueError("Corpus not found. No files like %s.*-of-*.gz in the directory %s."%(part,dirName))
+        self.gzBytesRead=0
+        self.totalGzBytes=sum(os.path.getsize(fName) for fName in self.fileNames)
+
+    
+    def progress(self):
+        """A [0,1] value reflecting the progress through the corpus in terms of (compressed) bytes read."""
+        return float(self.gzBytesRead)/self.totalGzBytes
 
     def lines(self,fileCount=-1):
         """
         Yields lines from the first `fileCount` files in the corpus as unicode strings.
         `fileCount` = How many files to visit? Set to -1 for all.
         """
+        gzBytesReadCompleteFiles=0 #bytes read from *completed* files
         if fileCount==-1:
             fileCount=len(self.fileNames)
         for fName in self.fileNames[:fileCount]:
@@ -67,7 +75,9 @@ class GoogleSynNGramCorpus(object):
                     ngramLine=unicode(ngramLine.strip(),"utf-8") #strip and skip over (possible) empty lines
                     if not ngramLine:
                         continue
+                    self.gzBytesRead=fIN.myfileobj.tell()+gzBytesReadCompleteFiles #set the position in the collection
                     yield ngramLine
+            gzBytesReadCompleteFiles+=os.path.getsize(fName)
 
     def depTypes(self,analyzeFileCount=5):
         """
