@@ -68,6 +68,8 @@ try:
 except ImportError:
     from Queue import Queue
 
+import cPickle as pickle
+
 from numpy import exp, dot, zeros, outer, random, dtype, get_include, float32 as REAL,\
     uint32, seterr, array, uint8, vstack, argsort, fromstring, sqrt, newaxis, ndarray, empty
 
@@ -145,6 +147,16 @@ class Vocabulary(dict):
     needed. Replaces Word2Vec.vocab. This is useful if we want to
     maintain several distinct vocabularies."""
     
+    @classmethod
+    def from_pickle(cls, fileName):
+        """Loads the vocabulary from a pickle dump"""
+        with open(fileName,"rb") as f:
+            return pickle.load(f)
+
+    def pickle(self, fileName):
+        with open(fileName,"wb") as f:
+            pickle.dump(self,fileName,pickle.HIGHEST_PROTOCOL)
+
     def __init__(self):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
         self.total_sentences = 0 # this is important to know when training, so we can gauge our progress and adjust alpha
@@ -921,12 +933,34 @@ def test_train_conll_syn():
         m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
 
+def test_vocab_pickle():
+    import cPickle as pickle
+    part_subdirs=False
+    corpusLoc="/mnt/ssd/w2v_sng_training"
+    v=Vocabulary()
+    if part_subdirs:
+        UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
+    else:
+        UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
+
+    #Build the vocabulary from the "nodes" part of the corpus
+    v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),5)
+    f=open("finnish-pbank-vocab.pkl","wb")
+    pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
+    f.close()
+
+
 if __name__ == "__main__":
     import os
     os.nice(19)
+
+
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
+
+    test_vocab_pickle()
+    sys.exit()
     
     #test_train_conll()
     test_train_googlesyn()
