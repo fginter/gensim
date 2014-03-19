@@ -21,6 +21,7 @@ import itertools
 import os.path
 import glob
 import gzip
+import re
 
 #from gensim import interfaces
 
@@ -41,11 +42,12 @@ class SynTreeNode(object):
 
 class GoogleSynNGramCorpus(object):
     
-    def __init__(self,dirName,part):
+    def __init__(self,dirName,part,fileSegments=None):
         """
         Initialize the corpus from a directory which contains the .gz files
         `dirName` = name of the directory
         `part` = string which specifies which part of the corpus to take. Values are "extended-quadarcs", "biarcs", etc...
+        `fileSegments` = iterable of integers or None. If given, lists which X's from the "X-of-N" files are to be taken. None -> all.
         """
         if part not in ("nodes,arcs,biarcs,triarcs,quadarcs,extended-arcs,extended-biarcs,extended-triarcs,extended-quadarcs".split(",")):
             raise ValueError("Unknown part parameter. Use arcs,biarcs,...,extended-arcs,extended-biarcs.")
@@ -53,6 +55,16 @@ class GoogleSynNGramCorpus(object):
         self.fileNames=sorted(glob.glob(os.path.join(dirName,part+".*-of-*.gz")))
         if not self.fileNames:
             raise ValueError("Corpus not found. No files like %s.*-of-*.gz in the directory %s."%(part,dirName))
+        if fileSegments!=None:
+            fileSegments=set(fileSegments)
+            filteredFileNames=[]
+            for fName in self.fileNames:
+                match=re.search(part+r"\.([0-9]+)-of-[0-9]+\.gz$",fName)
+                if not match:
+                    raise ValueError("Cannot parse filename %s - needed to restrict corpus files."%fName)
+                if int(match.group(1)) in fileSegments:
+                    filteredFileNames.append(fName)
+            self.fileNames=filteredFileNames
         self.gzBytesRead=0
         self.totalGzBytes=sum(os.path.getsize(fName) for fName in self.fileNames)
 
@@ -150,13 +162,15 @@ if __name__=="__main__":
     #Quick test only
     import sys
     
-    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/quadarcs","quadarcs")
+    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/quadarcs","quadarcs",fileSegments=range(5))
+    print C.fileNames
+    
 #    for t in C.depTypes(3):
 #        print t
-    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/arcs","arcs")
+#    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/arcs","arcs")
 #    for g,d,t,c in C.iterGD():
 #        print g.encode("utf-8"),d.encode("utf-8"),t,c
-    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/nodes","nodes")
-    for t,c in C.iterTokens():
-        print t.encode("utf-8"),c
+#    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/nodes","nodes")
+#    for t,c in C.iterTokens():
+#        print t.encode("utf-8"),c
 
