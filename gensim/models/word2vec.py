@@ -63,6 +63,7 @@ import heapq
 import time
 import threading
 import os.path
+import re
 try:
     from queue import Queue
 except ImportError:
@@ -159,7 +160,11 @@ class Vocabulary(dict):
 
     def __init__(self):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
+        self.index2vocab = [] # map from a word's matrix index (int) to the Vocab object (string)
         self.total_sentences = 0 # this is important to know when training, so we can gauge our progress and adjust alpha
+
+    def build_index2vocab(self):
+        self.index2vocab=[self[w] for w in self.index2word]
 
     def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
         """
@@ -187,7 +192,7 @@ class Vocabulary(dict):
             self[word]=v
 
         logger.info("collected %i word types from a stream of %i unigrams" % (len(self), counter+1))
-        self.create_binary_tree()
+
 
     def build_vocab(self, sentences, word2vec, min_count=5):
         """
@@ -222,8 +227,8 @@ class Vocabulary(dict):
                 self[word] = v
         logger.info("total %i word types after removing those with count<%s" % (len(self), min_count))
 
-        # add info about each word's Huffman encoding
-        self.create_binary_tree()
+
+
 
     def create_binary_tree(self):
         """
@@ -302,7 +307,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, corpusLoc, chunksize=1000, part_subdirs=True, direction=0):
+    def trainOnSynNGrams(self, dataIN, direction=0, reset_weights=True):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -317,21 +322,9 @@ class Word2Vec(utils.SaveLoad):
             warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
             sys.exit()
 
-        #Opens the Google Syn NGram corpus -> this is extremely lightweight, nothing is read at this point
-        #the objects simply gather the filenames, etc
-        if part_subdirs:
-            UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
-            ArcC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"arcs"),"arcs")
-        else:
-            UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
-            ArcC=GoogleSynNGramCorpus(corpusLoc,"arcs")
-
-        #Build the vocabulary from the "nodes" part of the corpus
-        if self.vocab==None:
-            self.vocab=Vocabulary()
-            self.vocab.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),self.min_count)
         
-        self.reset_weights()
+        if reset_weights:
+            self.reset_weights()
         logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
 
         #...the bit below is copied from train() and modified to work with the n-grams
@@ -366,11 +359,29 @@ class Word2Vec(utils.SaveLoad):
             thread.daemon = True  # make interrupting the process with ctrl+c easier
             thread.start()
         
+        currentProgress=0.0
+        currentJob=[]
+        for line in dataIN:
+            if line.startswith("### ChunkRows"):
+                if currentJob:
+                    jobs.put((currentProgress,currentJob))
+                currentJob=[]
+                currentProgress=float(re.search("Progress (.*?) #",line).group(1))
+                continue
+            g,d,dType,count=line.split("\t")
+            g,d,count=self.vocab.get(g.decode("utf-8")),self.vocab.get(d.decode("utf-8")),int(count)
+            if g==None or d==None:
+                continue
+            currentJob.append((g,d,dType,count))
+        else:
+            jobs.put((currentProgress,currentJob))
+                
+
         # convert input strings to Vocab objects (or None for OOV words), and start filling the jobs queue
-        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,count) for (gov,dep,dType,count) in ArcC.iterGD())
-        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
-            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
-            jobs.put((ArcC.progress(),job))
+#        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,count) for (gov,dep,dType,count) in ArcC.iterGD())
+#        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+#            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+#            jobs.put((ArcC.progress(),job))
         logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
         for _ in xrange(self.workers):
             jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
@@ -383,7 +394,6 @@ class Word2Vec(utils.SaveLoad):
             (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
 
         return ngram_count[0]
-
 
 
     def trainOnCoNLLSynNGrams(self, corpus, chunksize=10000, direction=0):
@@ -910,17 +920,11 @@ def test_train_conll():
     m.save_word2vec_format("gsim_w2v_wforms3.bin",binary=True)
 
 def test_train_googlesyn():
-    from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
-    m=Word2Vec(None, alpha=0.2, size=200, min_count=5, workers=10)
-    m.vocab=None
-    a=0.01
-    for r in range(10):
-        m.alpha=a
-        m.min_alpha=m.alpha/100.0
-        logger.info("Training with a=%f   mina=%f"%(m.alpha,m.min_alpha))
-        m.trainOnSynNGrams("/mnt/ssd/w2v_sng_training", part_subdirs=False, direction=2)
-        m.save_word2vec_format("gsim_w2v_wforms_fin_synngr-dir2-a%f.bin"%a,binary=True)
-        a*=4
+    #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+    m=Word2Vec(None, alpha=0.08, size=200, min_count=5, workers=10)
+    m.vocab=Vocabulary.from_pickle("google-syn-ngrams-vocab.pkl")
+    m.trainOnSynNGrams(sys.stdin, direction=2)
+    m.save_word2vec_format("test.bin",binary=True)
 
 def test_train_conll_syn():
     from gensim.corpora.conllcorpus import  CoNLLCorpus
@@ -933,35 +937,44 @@ def test_train_conll_syn():
         m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
 
-def test_vocab_pickle():
+def build_vocab_pickle(corpusLoc,outName,cutoff=5):
     import cPickle as pickle
-    part_subdirs=False
-    corpusLoc="/mnt/ssd/w2v_sng_training"
     v=Vocabulary()
-    if part_subdirs:
-        UGramsC=GoogleSynNGramCorpus(os.path.join(corpusLoc,"nodes"),"nodes")
-    else:
-        UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
+    UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
 
     #Build the vocabulary from the "nodes" part of the corpus
-    v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),5)
-    f=open("finnish-pbank-vocab.pkl","wb")
+    v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),cutoff)
+    #This one is useful for lookup when generating ngram pairs as vocabulary indices -> it doesn't have the Huffmann trees
+    logger.info("Saving lookupIndex pickle")
+    f=open(outName+"-lookupIndex.pkl","wb")
     pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
     f.close()
+    #Now generate the tree, make it possible to lookup by index, and wipe the dictionary
+    v.create_binary_tree()
+    v.build_index2vocab()
+    v.clear()
+    logger.info("Saving trainIndex pickle")
+    f=open(outName+"-trainIndex.pkl","wb")
+    pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
+    f.close()
+    
 
 
 if __name__ == "__main__":
     import os
     os.nice(19)
 
-
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
 
-    test_vocab_pickle()
-    sys.exit()
+    #test_vocab_pickle()
+    #sys.exit()
     
+    #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
+    build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
+    sys.exit()
+
     #test_train_conll()
     test_train_googlesyn()
     sys.exit()
