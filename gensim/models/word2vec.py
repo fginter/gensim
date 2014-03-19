@@ -56,6 +56,7 @@ For a tutorial with an interactive word2vec model trained on GoogleNews, visit h
 .. [2] Optimizing word2vec in gensim, http://radimrehurek.com/2013/09/word2vec-in-python-part-two-optimizing/
 """
 
+import itertools
 import logging
 import sys
 import os
@@ -165,6 +166,12 @@ class Vocabulary(dict):
 
     def build_index2vocab(self):
         self.index2vocab=[self[w] for w in self.index2word]
+
+    def build_dict(self):
+        assert len(self.index2word)==len(self.index2vocab)
+        for w,v in itertools.izip(self.index2word,self.index2vocab):
+            self[w]=v
+        assert len(self)==len(self.index2word)
 
     def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
         """
@@ -369,10 +376,10 @@ class Word2Vec(utils.SaveLoad):
                 currentProgress=float(re.search("Progress (.*?) #",line).group(1))
                 continue
             g,d,dType,count=line.split("\t")
-            g,d,count=self.vocab.get(g.decode("utf-8")),self.vocab.get(d.decode("utf-8")),int(count)
-            if g==None or d==None:
-                continue
-            currentJob.append((g,d,dType,count))
+            gV,dV,count=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)],int(count)
+#            assert int(g)==gV.index
+#            assert int(d)==dV.index
+            currentJob.append((gV,dV,dType,count))
         else:
             jobs.put((currentProgress,currentJob))
                 
@@ -921,10 +928,19 @@ def test_train_conll():
 
 def test_train_googlesyn():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
-    m=Word2Vec(None, alpha=0.08, size=200, min_count=5, workers=10)
-    m.vocab=Vocabulary.from_pickle("google-syn-ngrams-vocab.pkl")
-    m.trainOnSynNGrams(sys.stdin, direction=2)
-    m.save_word2vec_format("test.bin",binary=True)
+    alpha=0.02
+    m=Word2Vec(None, alpha=0.02, size=52, min_count=5, workers=10)
+    m.vocab=Vocabulary.from_pickle("eng-full-trainIndex.pkl")
+    m.vocab.build_dict()
+    #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
+    for a in (0.08, 0.06, 0.1):
+        f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
+        m.alpha=a
+        m.min_alpha=a/100.0
+        m.reset_weights()
+        m.trainOnSynNGrams(f, direction=2)
+        f.close()
+        m.save_word2vec_format("eng-52-a%f.bin"%a,binary=True)
 
 def test_train_conll_syn():
     from gensim.corpora.conllcorpus import  CoNLLCorpus
@@ -972,8 +988,8 @@ if __name__ == "__main__":
     #sys.exit()
     
     #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
-    build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
-    sys.exit()
+    #build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
+    #sys.exit()
 
     #test_train_conll()
     test_train_googlesyn()
