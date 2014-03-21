@@ -1,13 +1,18 @@
 import sys
 import multiprocessing as mp
 from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+from gensim.corpora.googleflatngramcorpus import GoogleFlatNGramCorpus
 from gensim.models.word2vec import Vocabulary, Vocab
 from gensim import utils
 
 class NGramGenerator(mp.Process):
-    
-    def __init__(self,corpusLoc,part,partsList,outLock,chunkSize,vocabFile):
+
+    def __init__(self,corpusClass,corpusLoc,part,partsList,outLock,chunkSize,vocabFile):
+        """
+        `corpusClass` either GoogleSynNGramCorpus or GoogleFlatNGramCorpus
+        """
         mp.Process.__init__(self)
+        self.corpusClass=corpusClass
         self.corpusLoc=corpusLoc
         self.part=part
         self.partsList=partsList
@@ -27,9 +32,9 @@ class NGramGenerator(mp.Process):
     def run(self):
         v=Vocabulary.from_pickle(self.vocabFile)
         corpus=GoogleSynNGramCorpus(self.corpusLoc,self.part,self.partsList)
-        for chunk in utils.grouper(corpus.iterGD(),self.chunkSize):
+        for chunk in utils.grouper(corpus.iterPairs(),self.chunkSize):
             chunkLen=len(chunk)
-            chunkStr=self.mapChunk(chunk,v)#"\n".join("\t".join(unicode(x).encode("utf-8") for x in gdtcTuple) for gdtcTuple in chunk)
+            chunkStr=self.mapChunk(chunk,v)
             self.lock.acquire()
             print "### ChunkRows %d Progress %f ###"%(chunkLen,corpus.progress())
             print chunkStr

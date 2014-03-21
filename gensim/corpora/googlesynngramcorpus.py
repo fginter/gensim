@@ -104,9 +104,9 @@ class GoogleSynNGramCorpus(object):
                 rest,depType,headNumber=token.rsplit(u"/",2)
                 yield depType
 
-    def iterGD(self,fileCount=-1):
+    def iterPairs(self,fileCount=-1):
         """
-        Return a generator over (governor,dependent,depType,count) tuples. This currently only works if part=="arcs"
+        Return an iterator over (governor,dependent,depType,count) tuples. This currently only works if part=="arcs"
         `fileCount` = How many files to visit? Set to -1 for all (default)
         """
         if self.part not in (u"arcs",):
