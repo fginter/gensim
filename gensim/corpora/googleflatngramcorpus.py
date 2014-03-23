@@ -117,7 +117,11 @@ class GoogleFlatNGramCorpus(object):
         currNGram=None
         currCount=0
         for ngramLine in self.lines(fileCount):
-            ngram,year,count,bookcount=ngramLine.split(u"\t")
+            cols=ngramLine.split(u"\t")
+            if len(cols)==4: #orig format
+                ngram,year,count,bookcount=cols
+            elif len(cols)==2: #my repacked format
+                ngram,count=cols
             count=int(count)
             if ngram==currNGram:
                 currCount+=count
@@ -145,8 +149,9 @@ class GoogleFlatNGramCorpus(object):
 if __name__=="__main__":
     #Quick test only
     import sys
-    
-    C=GoogleFlatNGramCorpus(fileNames=["/home/ginter/ngram.gz"])
+    import glob
+
+    C=GoogleFlatNGramCorpus(fileNames=glob.glob("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq/*.gz"))
     for x in C.iterTokens():
         print x
     

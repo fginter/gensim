@@ -83,6 +83,7 @@ from gensim._six import iteritems, itervalues, string_types
 from gensim._six.moves import xrange
 import itertools
 from gensim.corpora.googlesynngramcorpus import  GoogleSynNGramCorpus
+from gensim.corpora.googleflatngramcorpus import  GoogleFlatNGramCorpus
 
 
 try:
@@ -929,18 +930,19 @@ def test_train_conll():
 def test_train_googlesyn():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
     alpha=0.02
-    m=Word2Vec(None, alpha=0.02, size=52, min_count=5, workers=10)
+    m=Word2Vec(None, alpha=0.02, size=300, min_count=5, workers=10)
     m.vocab=Vocabulary.from_pickle("eng-full-trainIndex.pkl")
     m.vocab.build_dict()
     #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
-    for a in (0.08, 0.06, 0.1):
-        f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
-        m.alpha=a
-        m.min_alpha=a/100.0
+    for a in (0.08, 0.16, 0.01):
         m.reset_weights()
-        m.trainOnSynNGrams(f, direction=2)
-        f.close()
-        m.save_word2vec_format("eng-52-a%f.bin"%a,binary=True)
+        for it in range(1,6):
+            f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
+            m.alpha=a/float(it)
+            m.min_alpha=a/100.0
+            m.trainOnSynNGrams(f, direction=2)
+            f.close()
+            m.save_word2vec_format("eng-300-a%f-i%d.bin"%(a,it),binary=True)
 
 def test_train_conll_syn():
     from gensim.corpora.conllcorpus import  CoNLLCorpus
@@ -953,10 +955,11 @@ def test_train_conll_syn():
         m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
 
-def build_vocab_pickle(corpusLoc,outName,cutoff=5):
+def build_vocab_pickle(outName,cutoff=5):
     import cPickle as pickle
+    import glob
     v=Vocabulary()
-    UGramsC=GoogleSynNGramCorpus(corpusLoc,"nodes")
+    UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
 
     #Build the vocabulary from the "nodes" part of the corpus
     v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),cutoff)
@@ -984,8 +987,8 @@ if __name__ == "__main__":
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
 
-    #test_vocab_pickle()
-    #sys.exit()
+    build_vocab_pickle("eng-flatng")
+    sys.exit()
     
     #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
     #build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
