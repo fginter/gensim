@@ -315,7 +315,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, dataIN, direction=0, reset_weights=True):
+    def trainOnSynNGrams(self, dataIN, reset_weights):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -354,7 +354,7 @@ class Word2Vec(utils.SaveLoad):
                 alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * progress))
                 #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
                 # how many words did we train on? out-of-vocabulary (unknown) words do not count
-                train_synngram_list(self,job,alpha,work,direction)
+                train_synngram_list(self,job,alpha,work)
                 with lock:
                     ngram_count[0] += len(job)
                     elapsed = time.time() - start
@@ -375,12 +375,15 @@ class Word2Vec(utils.SaveLoad):
                     jobs.put((currentProgress,currentJob))
                 currentJob=[]
                 currentProgress=float(re.search("Progress (.*?) #",line).group(1))
+                if currentProgress>0.1:
+                    break
                 continue
             g,d,dType,count=line.split("\t")
             gV,dV,count=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)],int(count)
 #            assert int(g)==gV.index
 #            assert int(d)==dV.index
-            currentJob.append((gV,dV,dType,count))
+            currentJob.append((gV,dV,None,count))
+            currentJob.append((dV,gV,None,count))
         else:
             jobs.put((currentProgress,currentJob))
                 
@@ -930,19 +933,31 @@ def test_train_conll():
 def test_train_googlesyn():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
     alpha=0.02
-    m=Word2Vec(None, alpha=0.02, size=300, min_count=5, workers=10)
+    m=Word2Vec(None, alpha=0.02, size=200, min_count=5, workers=10)
     m.vocab=Vocabulary.from_pickle("eng-full-trainIndex.pkl")
     m.vocab.build_dict()
     #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
-    for a in (0.08, 0.16, 0.01):
+    for a in (0.08,):
         m.reset_weights()
-        for it in range(1,6):
-            f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
-            m.alpha=a/float(it)
-            m.min_alpha=a/100.0
-            m.trainOnSynNGrams(f, direction=2)
-            f.close()
-            m.save_word2vec_format("eng-300-a%f-i%d.bin"%(a,it),binary=True)
+        f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
+        m.min_alpha=a/100.0
+        m.trainOnSynNGrams(f, reset_weights=False)
+        f.close()
+        m.save_word2vec_format("eng-300-delme.bin",binary=True)
+
+def test_train_googleflat():
+    #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+    alpha=0.02
+    m=Word2Vec(None, alpha=0.02, size=300, min_count=5, workers=10)
+    m.vocab=Vocabulary.from_pickle("eng-flatng-trainIndex.pkl")
+    m.vocab.build_dict()
+    #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
+    a=0.1
+    m.alpha=a
+    m.min_alpha=a/100.0
+    m.trainOnSynNGrams(sys.stdin, direction=0)
+    m.save_word2vec_format("eng-300-flatng-a0.1.bin",binary=True)
+
 
 def test_train_conll_syn():
     from gensim.corpora.conllcorpus import  CoNLLCorpus
@@ -987,8 +1002,8 @@ if __name__ == "__main__":
     logging.info("running %s" % " ".join(sys.argv))
     logging.info("using optimization %s" % FAST_VERSION)
 
-    build_vocab_pickle("eng-flatng")
-    sys.exit()
+    #build_vocab_pickle("eng-flatng")
+    #sys.exit()
     
     #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
     #build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
