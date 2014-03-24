@@ -89,7 +89,7 @@ class GoogleFlatNGramCorpus(object):
 
         `nGram` is a unicode
         `count` is an integer
-        `whichPairs` = L* for leftmost word against all, *R for rightmost word against all, LR for (leftmostword,rightmostword), and L for leftmost word only (unigram)
+        `whichPairs` = L* for leftmost word against all, *R for rightmost word against all, LR for (leftmostword,rightmostword), L**R for L* union *R
         """
         tokens=nGram.split()
         if u"_" in tokens[0]:
@@ -100,10 +100,17 @@ class GoogleFlatNGramCorpus(object):
                 yield (l,r,whichPairs,count)
         elif whichPairs=="*R":
             r=tokens[-1]
-            for l in itertools.islice(tokens,-1):
+            for l in itertools.islice(tokens,len(tokens)-1):
                 yield (l,r,whichPairs,count)
         elif whichPairs=="LR":
             yield tokens[0],tokens[-1], whichPairs, count
+        elif whichPairs=="L**R":
+            l=tokens[0]
+            for r in itertools.islice(tokens,1,len(tokens)):
+                yield (l,r,whichPairs,count)
+            r=tokens[-1]
+            for l in itertools.islice(tokens,len(tokens)-1):
+                yield (l,r,whichPairs,count)
         
     def iterPairs(self,whichPairs,fileCount=-1):
         """
