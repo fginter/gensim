@@ -933,36 +933,37 @@ class LineSentence(object):
                 for line in fin:
                     yield line.split()
 
-def test_train_conll():
-    from gensim.corpora.conllcorpus import  CoNLLCorpus
-    C=CoNLLCorpus("/home/ginter/pbank.tiny.conll09")
-    m=Word2Vec(None, size=200, min_count=5, workers=10)
-    m.vocab.build_vocab(C.iterSentences(max_count=-1),m)
-    m.reset_weights()
-    m.train(C.iterSentences())
-    m.save_word2vec_format("gsim_w2v_wforms3.bin",binary=True)
-
-def test_train_googlesyn():
+def test_train_googlesyn(lang):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
     a=0.08
+
+    if lang=="fin":
+        vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
+        vTypeName="vocab/FIN-pbv3-syntax-deptypes-trainIndex.pkl"
+        dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn.txt"
+    elif lang=="eng":
+        vName="vocab/ENG-google-syntax-words-trainIndex.pkl"
+        vTypeName="vocab/ENG-google-syntax-deptypes-trainIndex.pkl"
+        dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt"
+    out=lang+"-syntax-300"
+
     m=Word2Vec(None, alpha=a, size=300, min_count=5, workers=10)
-    m.vocab=Vocabulary.from_pickle("vocab/ENG-google-syntax-words-trainIndex.pkl")
+    m.vocab=Vocabulary.from_pickle(vName)
     m.reset_weights()
-    f=open("/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt","rt")
+    f=open(dataIN,"rt")
     m.min_alpha=a/100.0
     m.trainOnSynNGrams(f,False)
     f.close()
-    m.save_word2vec_format("eng-syntax-300-notypes.bin",binary=True)
+    m.save_word2vec_format(out+"-notypes.bin",binary=True)
 
-    m.vocabTypes=Vocabulary.from_pickle("vocab/ENG-google-syntax-deptypes-trainIndex.pkl")
+    m.vocabTypes=Vocabulary.from_pickle(vTypeName)
     m.vocabTypes.renumberPoints(len(m.vocab))
     m.reset_weights()
-    f=open("/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt","rt")
+    f=open(dataIN,"rt")
     m.min_alpha=a/100.0
     m.trainOnSynNGrams(f,True)
     f.close()
-    m.save_word2vec_format("eng-syntax-300-withtypes.bin",binary=True)
-
+    m.save_word2vec_format(out+"-withtypes.bin",binary=True)
 
 def test_train_googleflat():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
@@ -1024,8 +1025,18 @@ def build_vocab_pickles():
 
     try:
         v=Vocabulary()
+        UGramsC=GoogleSynNGramCorpus.from_glob("/usr/share/ParseBank/google-syntax-ngrams/nodes/*.gz")
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(),20)
+        pickle_vocab("vocab/ENG-google-syntax-words",v)
+    except:
+        traceback.print_exc()
+
+    return
+
+    try:
+        v=Vocabulary()
         NGramsC=GoogleSynNGramCorpus(fileNames=["/mnt/ssd/arcs-fin.gz"])
-        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes(-1)),1)
+        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes()),1)
         pickle_vocab("vocab/FIN-pbv3-syntax-deptypes",v)
     except:
         traceback.print_exc()
@@ -1034,7 +1045,7 @@ def build_vocab_pickles():
     try:
         v=Vocabulary()
         NGramsC=GoogleSynNGramCorpus(dirName="/usr/share/ParseBank/google-syntax-ngrams/arcs",part="arcs")
-        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes(-1)),1)
+        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes()),1)
         pickle_vocab("vocab/ENG-google-syntax-deptypes",v)
     except:
         traceback.print_exc()
@@ -1042,7 +1053,7 @@ def build_vocab_pickles():
     try:
         v=Vocabulary()
         UGramsC=GoogleSynNGramCorpus(fileNames=["/mnt/ssd/nodes-fin.gz"])
-        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),5)
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(),5)
         pickle_vocab("vocab/FIN-pbv3-syntax-words",v)
     except:
         traceback.print_exc()
@@ -1052,7 +1063,7 @@ def build_vocab_pickles():
     try:
         v=Vocabulary()
         UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
-        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),cutoff)
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(),cutoff)
         pickle_vocab("vocab/ENG-google-flatngram-words",v)
     except:
         traceback.print_exc()
@@ -1083,7 +1094,9 @@ if __name__ == "__main__":
 
     #build_vocab_pickles()
     #test_train_conll()
-    test_train_googlesyn()
+    eval(sys.argv[1])
+    func()
+    #test_train_googlesyn_fin()
     sys.exit()
 
     # check and process cmdline input
