@@ -154,7 +154,11 @@ class Vocabulary(dict):
     def from_pickle(cls, fileName):
         """Loads the vocabulary from a pickle dump"""
         with open(fileName,"rb") as f:
-            return pickle.load(f)
+            v=pickle.load(f)
+            if len(v)==0: #
+                v.build_dict() #we save some vocabularies with index2word and index2vocab, so fill the dict upon loading
+            return v
+            
 
     def pickle(self, fileName):
         with open(fileName,"wb") as f:
@@ -164,6 +168,12 @@ class Vocabulary(dict):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
         self.index2vocab = [] # map from a word's matrix index (int) to the Vocab object (string)
         self.total_sentences = 0 # this is important to know when training, so we can gauge our progress and adjust alpha
+
+    def renumberPoints(self,inc):
+        """Increases the points in the vocabulary by +inc (a constant), which makes
+        it possible to use two vocabularies side-by-side"""
+        for v in self.itervalues(): #Vocab objects
+            v.point+=inc #same as incrementing every element of the point array by the constant inc
 
     def build_index2vocab(self):
         self.index2vocab=[self[w] for w in self.index2word]
@@ -315,7 +325,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, dataIN, reset_weights):
+    def trainOnSynNGrams(self, dataIN, useTypes):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -331,8 +341,6 @@ class Word2Vec(utils.SaveLoad):
             sys.exit()
 
         
-        if reset_weights:
-            self.reset_weights()
         logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
 
         #...the bit below is copied from train() and modified to work with the n-grams
@@ -375,15 +383,16 @@ class Word2Vec(utils.SaveLoad):
                     jobs.put((currentProgress,currentJob))
                 currentJob=[]
                 currentProgress=float(re.search("Progress (.*?) #",line).group(1))
-                if currentProgress>0.1:
-                    break
                 continue
             g,d,dType,count=line.split("\t")
             gV,dV,count=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)],int(count)
+            if useTypes:
+                typeV=self.vocabTypes.index2vocab[int(dType)]
+            else:
+                typeV=None
 #            assert int(g)==gV.index
 #            assert int(d)==dV.index
-            currentJob.append((gV,dV,None,count))
-            currentJob.append((dV,gV,None,count))
+            currentJob.append((gV,dV,typeV,count))
         else:
             jobs.put((currentProgress,currentJob))
                 
@@ -407,133 +416,133 @@ class Word2Vec(utils.SaveLoad):
         return ngram_count[0]
 
 
-    def trainOnCoNLLSynNGrams(self, corpus, chunksize=10000, direction=0):
-        """
-        Train the model on ngrams from a conll corpus. Vocabulary should already be initialized at this point
+    # def trainOnCoNLLSynNGrams(self, corpus, chunksize=10000, direction=0):
+    #     """
+    #     Train the model on ngrams from a conll corpus. Vocabulary should already be initialized at this point
 
-        `chunksize` =  how many n-grams constitute a training batch for one worker thread
+    #     `chunksize` =  how many n-grams constitute a training batch for one worker thread
         
-        """
-        if FAST_VERSION < 0:
-            import warnings
-            warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+    #     """
+    #     if FAST_VERSION < 0:
+    #         import warnings
+    #         warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
 
-        self.reset_weights()
-        logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+    #     self.reset_weights()
+    #     logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
 
-        #...the bit below is copied from train() and modified to work with the n-grams
-        jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
-        lock = threading.Lock()  # for shared state (=number of ngrams trained so far, log reports...)
+    #     #...the bit below is copied from train() and modified to work with the n-grams
+    #     jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+    #     lock = threading.Lock()  # for shared state (=number of ngrams trained so far, log reports...)
 
-        ngram_count=[0]
-        start, next_report = time.time(), [1.0]
+    #     ngram_count=[0]
+    #     start, next_report = time.time(), [1.0]
 
-        def worker_train():
-            """Train the model, lifting lists of ngrams from the jobs queue."""
-            work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
+    #     def worker_train():
+    #         """Train the model, lifting lists of ngrams from the jobs queue."""
+    #         work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
 
-            while True:
-                progress,job = jobs.get()
-                if job is None:  # data finished, exit
-                    break
-                # update the learning rate before every job
-                alpha = max(self.min_alpha, self.alpha * (1.0 - progress))
-                #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
-                # how many words did we train on? out-of-vocabulary (unknown) words do not count
-                train_synngram_list(self,job,alpha,work,direction)
-                with lock:
-                    ngram_count[0] += len(job)
-                    elapsed = time.time() - start
-                    if elapsed >= next_report[0]:
-                        logger.info("PROGRESS: %i (%.1f%%) ngrams finished. Running at %.0f ngrams/s."%(ngram_count[0], progress*100, ngram_count[0]/elapsed))
-                        next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
+    #         while True:
+    #             progress,job = jobs.get()
+    #             if job is None:  # data finished, exit
+    #                 break
+    #             # update the learning rate before every job
+    #             alpha = max(self.min_alpha, self.alpha * (1.0 - progress))
+    #             #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
+    #             # how many words did we train on? out-of-vocabulary (unknown) words do not count
+    #             train_synngram_list(self,job,alpha,work,direction)
+    #             with lock:
+    #                 ngram_count[0] += len(job)
+    #                 elapsed = time.time() - start
+    #                 if elapsed >= next_report[0]:
+    #                     logger.info("PROGRESS: %i (%.1f%%) ngrams finished. Running at %.0f ngrams/s."%(ngram_count[0], progress*100, ngram_count[0]/elapsed))
+    #                     next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
 
-        workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
-        for thread in workers:
-            thread.daemon = True  # make interrupting the process with ctrl+c easier
-            thread.start()
+    #     workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
+    #     for thread in workers:
+    #         thread.daemon = True  # make interrupting the process with ctrl+c easier
+    #         thread.start()
         
-        # convert input ngram items to Vocab objects (or None for OOV words), and start filling the jobs queue
-        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,weight) for (gov,dep,dType,weight) in corpus.iterDeps())
-        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
-            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
-            jobs.put((float(corpus.currSentenceIDX)/self.vocab.total_sentences,job))
-        logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
-        for _ in xrange(self.workers):
-            jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
+    #     # convert input ngram items to Vocab objects (or None for OOV words), and start filling the jobs queue
+    #     no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,weight) for (gov,dep,dType,weight) in corpus.iterDeps())
+    #     for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+    #         logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+    #         jobs.put((float(corpus.currSentenceIDX)/self.vocab.total_sentences,job))
+    #     logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
+    #     for _ in xrange(self.workers):
+    #         jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
 
-        for thread in workers:
-            thread.join()
+    #     for thread in workers:
+    #         thread.join()
 
-        elapsed = time.time() - start
-        logger.info("training on %i ngrams took %.1fs, %.0f ngram/s" %
-            (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
+    #     elapsed = time.time() - start
+    #     logger.info("training on %i ngrams took %.1fs, %.0f ngram/s" %
+    #         (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
 
-        return ngram_count[0]
+    #     return ngram_count[0]
         
         
 
-    def train(self, sentences, total_words=None, word_count=0, chunksize=100):
-        """
-        Update the model's neural weights from a sequence of sentences (can be a once-only generator stream).
-        Each sentence must be a list of utf8 strings.
+    # def train(self, sentences, total_words=None, word_count=0, chunksize=100):
+    #     """
+    #     Update the model's neural weights from a sequence of sentences (can be a once-only generator stream).
+    #     Each sentence must be a list of utf8 strings.
 
-        """
-        if FAST_VERSION < 0:
-            import warnings
-            warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
-        logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+    #     """
+    #     if FAST_VERSION < 0:
+    #         import warnings
+    #         warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+    #     logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
 
-        if not self.vocab:
-            raise RuntimeError("you must first build vocabulary before training the model")
+    #     if not self.vocab:
+    #         raise RuntimeError("you must first build vocabulary before training the model")
 
-        start, next_report = time.time(), [1.0]
-        word_count, total_words = [word_count], total_words or sum(v.count for v in itervalues(self.vocab))
-        jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
-        lock = threading.Lock()  # for shared state (=number of words trained so far, log reports...)
+    #     start, next_report = time.time(), [1.0]
+    #     word_count, total_words = [word_count], total_words or sum(v.count for v in itervalues(self.vocab))
+    #     jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+    #     lock = threading.Lock()  # for shared state (=number of words trained so far, log reports...)
 
-        def worker_train():
-            """Train the model, lifting lists of sentences from the jobs queue."""
-            work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
+    #     def worker_train():
+    #         """Train the model, lifting lists of sentences from the jobs queue."""
+    #         work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
 
-            while True:
-                job = jobs.get()
-                if job is None:  # data finished, exit
-                    break
-                # update the learning rate before every job
-                alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * word_count[0] / total_words))
-                # how many words did we train on? out-of-vocabulary (unknown) words do not count
-                job_words = sum(train_sentence(self, sentence, alpha, work) for sentence in job)
-                with lock:
-                    word_count[0] += job_words
-                    elapsed = time.time() - start
-                    if elapsed >= next_report[0]:
-                        logger.info("PROGRESS: at %.2f%% words, alpha %.05f, %.0f words/s" %
-                            (100.0 * word_count[0] / total_words, alpha, word_count[0] / elapsed if elapsed else 0.0))
-                        next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
+    #         while True:
+    #             job = jobs.get()
+    #             if job is None:  # data finished, exit
+    #                 break
+    #             # update the learning rate before every job
+    #             alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * word_count[0] / total_words))
+    #             # how many words did we train on? out-of-vocabulary (unknown) words do not count
+    #             job_words = sum(train_sentence(self, sentence, alpha, work) for sentence in job)
+    #             with lock:
+    #                 word_count[0] += job_words
+    #                 elapsed = time.time() - start
+    #                 if elapsed >= next_report[0]:
+    #                     logger.info("PROGRESS: at %.2f%% words, alpha %.05f, %.0f words/s" %
+    #                         (100.0 * word_count[0] / total_words, alpha, word_count[0] / elapsed if elapsed else 0.0))
+    #                     next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
 
-        workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
-        for thread in workers:
-            thread.daemon = True  # make interrupting the process with ctrl+c easier
-            thread.start()
+    #     workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
+    #     for thread in workers:
+    #         thread.daemon = True  # make interrupting the process with ctrl+c easier
+    #         thread.start()
 
-        # convert input strings to Vocab objects (or None for OOV words), and start filling the jobs queue
-        no_oov = ([self.vocab.get(word, None) for word in sentence] for sentence in sentences)
-        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
-            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
-            jobs.put(job)
-        logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
-        for _ in xrange(self.workers):
-            jobs.put(None)  # give the workers heads up that they can finish -- no more work!
+    #     # convert input strings to Vocab objects (or None for OOV words), and start filling the jobs queue
+    #     no_oov = ([self.vocab.get(word, None) for word in sentence] for sentence in sentences)
+    #     for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+    #         logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+    #         jobs.put(job)
+    #     logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
+    #     for _ in xrange(self.workers):
+    #         jobs.put(None)  # give the workers heads up that they can finish -- no more work!
 
-        for thread in workers:
-            thread.join()
+    #     for thread in workers:
+    #         thread.join()
 
-        elapsed = time.time() - start
-        logger.info("training on %i words took %.1fs, %.0f words/s" %
-            (word_count[0], elapsed, word_count[0] / elapsed if elapsed else 0.0))
+    #     elapsed = time.time() - start
+    #     logger.info("training on %i words took %.1fs, %.0f words/s" %
+    #         (word_count[0], elapsed, word_count[0] / elapsed if elapsed else 0.0))
 
-        return word_count[0]
+    #     return word_count[0]
 
 
     def reset_weights(self):
@@ -544,7 +553,10 @@ class Word2Vec(utils.SaveLoad):
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
         for i in xrange(len(self.vocab)):
             self.syn0[i] = (random.rand(self.layer1_size) - 0.5) / self.layer1_size
-        self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
+        vocabLen=len(self.vocab)
+        if "vocabTypes" in self.__dict__ and self.vocabTypes!=None:
+            vocabLen+=len(self.vocabTypes)
+        self.syn1 = zeros((vocabLen, self.layer1_size), dtype=REAL)
         self.syn0norm = None
 
 
@@ -932,25 +944,31 @@ def test_train_conll():
 
 def test_train_googlesyn():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
-    alpha=0.02
-    m=Word2Vec(None, alpha=0.02, size=200, min_count=5, workers=10)
-    m.vocab=Vocabulary.from_pickle("eng-full-trainIndex.pkl")
-    m.vocab.build_dict()
-    #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
-    for a in (0.08,):
-        m.reset_weights()
-        f=open("/home/ginter/gensim-myfork/gensim/corpora/eng.txt","rt")
-        m.min_alpha=a/100.0
-        m.trainOnSynNGrams(f, reset_weights=False)
-        f.close()
-        m.save_word2vec_format("eng-300-delme.bin",binary=True)
+    a=0.08
+    m=Word2Vec(None, alpha=a, size=300, min_count=5, workers=10)
+    m.vocab=Vocabulary.from_pickle("vocab/ENG-google-syntax-words-trainIndex.pkl")
+    m.reset_weights()
+    f=open("/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt","rt")
+    m.min_alpha=a/100.0
+    m.trainOnSynNGrams(f,False)
+    f.close()
+    m.save_word2vec_format("eng-syntax-300-notypes.bin",binary=True)
+
+    m.vocabTypes=Vocabulary.from_pickle("vocab/ENG-google-syntax-deptypes-trainIndex.pkl")
+    m.vocabTypes.renumberPoints(len(m.vocab))
+    m.reset_weights()
+    f=open("/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt","rt")
+    m.min_alpha=a/100.0
+    m.trainOnSynNGrams(f,True)
+    f.close()
+    m.save_word2vec_format("eng-syntax-300-withtypes.bin",binary=True)
+
 
 def test_train_googleflat():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
     alpha=0.02
     m=Word2Vec(None, alpha=0.02, size=300, min_count=5, workers=10)
     m.vocab=Vocabulary.from_pickle("eng-flatng-trainIndex.pkl")
-    m.vocab.build_dict()
     #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
     a=0.1
     m.alpha=a
@@ -969,28 +987,79 @@ def test_train_conll_syn():
         m.trainOnCoNLLSynNGrams(C, chunksize=30000,direction=direction)
         m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
 
-
-def build_vocab_pickle(outName,cutoff=5):
-    import cPickle as pickle
-    import glob
-    v=Vocabulary()
-    UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
-
-    #Build the vocabulary from the "nodes" part of the corpus
-    v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),cutoff)
-    #This one is useful for lookup when generating ngram pairs as vocabulary indices -> it doesn't have the Huffmann trees
+def pickle_vocab(outName,v):
+    """This will produce two versions of the vocabulary:
+    outName-lookupIndex.pkl doesn't have the Huffmann trees and is used when generating the training pairs
+    outName-trainIndex.pkl - with the Huffmann trees, used during training (is much larger in size)
+    """
     logger.info("Saving lookupIndex pickle")
-    f=open(outName+"-lookupIndex.pkl","wb")
-    pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
-    f.close()
+    #Save as-is, no huffmann tree
+    #This one is useful for lookup when generating ngram pairs as vocabulary indices
+    with open(outName+"-lookupIndex.pkl","wb") as f:
+        pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
     #Now generate the tree, make it possible to lookup by index, and wipe the dictionary
     v.create_binary_tree()
     v.build_index2vocab()
-    v.clear()
+    v.clear() #will wipe this dictionary, not to save everything twice. 
     logger.info("Saving trainIndex pickle")
-    f=open(outName+"-trainIndex.pkl","wb")
-    pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
-    f.close()
+    with open(outName+"-trainIndex.pkl","wb") as f:
+        pickle.dump(v,f,pickle.HIGHEST_PROTOCOL)
+
+
+def dTypeIT(it):
+    for dType,count in it:
+        yield (dType+u"-gov",count)
+        yield (dType+u"-dep",count)
+
+def build_ngram_vocab():
+    """Builds a dummy vocabulary for various ngram positions"""
+    v=Vocabulary()
+    v.build_vocab_from_unigram_count_iterator(((x,1) for x in u"-4 -3 -2 -1 +1 +2 +3 +4 L R".split()),0) #I'll code these as numbers - left, + right, or L/R for left-right context
+    pickle_vocab("vocab/ngram-positions",v)
+
+def build_vocab_pickles():
+    import cPickle as pickle
+    import glob
+    import traceback
+
+    try:
+        v=Vocabulary()
+        NGramsC=GoogleSynNGramCorpus(fileNames=["/mnt/ssd/arcs-fin.gz"])
+        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes(-1)),1)
+        pickle_vocab("vocab/FIN-pbv3-syntax-deptypes",v)
+    except:
+        traceback.print_exc()
+
+
+    try:
+        v=Vocabulary()
+        NGramsC=GoogleSynNGramCorpus(dirName="/usr/share/ParseBank/google-syntax-ngrams/arcs",part="arcs")
+        v.build_vocab_from_unigram_count_iterator(dTypeIT(NGramsC.depTypes(-1)),1)
+        pickle_vocab("vocab/ENG-google-syntax-deptypes",v)
+    except:
+        traceback.print_exc()
+
+    try:
+        v=Vocabulary()
+        UGramsC=GoogleSynNGramCorpus(fileNames=["/mnt/ssd/nodes-fin.gz"])
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),5)
+        pickle_vocab("vocab/FIN-pbv3-syntax-words",v)
+    except:
+        traceback.print_exc()
+
+    return
+
+    try:
+        v=Vocabulary()
+        UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(-1),cutoff)
+        pickle_vocab("vocab/ENG-google-flatngram-words",v)
+    except:
+        traceback.print_exc()
+        
+    
+    
+    
     
 
 
@@ -1008,7 +1077,11 @@ if __name__ == "__main__":
     #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
     #build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
     #sys.exit()
+    
+    #build_ngram_vocab()
+    #sys.exit()
 
+    #build_vocab_pickles()
     #test_train_conll()
     test_train_googlesyn()
     sys.exit()

@@ -31,7 +31,6 @@ ctypedef void (*fast_sentence_ptr) (
     REAL_t *syn0, REAL_t *syn1, const int size,
     const np.uint32_t word2_index, const REAL_t alpha, REAL_t *work) nogil
 
-#TODO
 ctypedef void (*fast_sentence_ng_ptr) (
     const np.uint32_t *w1_point, const np.uint8_t *w1_code, const int w1_codelen,
     REAL_t *syn0, REAL_t *syn1, const int size,
@@ -235,7 +234,8 @@ def train_synngram_list(model, ngrams, alpha, _work):
 #            for j in range(j, k):
 #                if j == i or codelens[j] == 0:
 #                    continue
-            fast_sentence_ng(points_w1[i], codes_w1[i], codelens_w1[i], syn0, syn1, size, indexes_w0[i], points_w1[i], codes_w1[i], codelens_w1[i], _alpha*counts[i], work)
+            fast_sentence_ng(points_w1[i], codes_w1[i], codelens_w1[i], syn0, syn1, size, indexes_w0[i], points_depTypes[i], codes_depTypes[i], codelens_depTypes[i], _alpha*counts[i], work)
+            #fast_sentence(points_w1[i], codes_w1[i], codelens_w1[i], syn0, syn1, size, indexes_w0[i], _alpha*counts[i], work)
             
 
     return result
