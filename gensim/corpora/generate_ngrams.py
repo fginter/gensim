@@ -5,6 +5,8 @@ from gensim.corpora.googleflatngramcorpus import GoogleFlatNGramCorpus
 from gensim.models.word2vec import Vocabulary, Vocab
 from gensim import utils
 import glob
+import time
+import os.path
 
 class NGramGenerator(mp.Process):
 
@@ -53,41 +55,51 @@ class NGramGenerator(mp.Process):
         for chunk in utils.grouper(it,self.chunkSize):
             chunkLen=len(chunk)
             chunkStr=self.mapChunk(chunk,v,vType)
-            if chunkStr:
-                self.lock.acquire()
-                print "### ChunkRows %d Progress %f ###"%(chunkLen,corpus.progress())
-                print chunkStr
-                sys.stdout.flush()
-                self.lock.release()
+            pr=corpus.progress()
+            self.progressArray[self.processIDX]=pr
+            while min(x for x in self.progressArray)+0.01<pr: #There's someone lagging behind by more than 1pp, wait for them
+                print >> sys.stderr, min(self.progressArray)
+                time.sleep(3) #...wait 3 sec
+            with self.progressArray.get_lock(): #use the progressArray lock to synchronize stdout
+                if chunkStr:
+                    print "### ChunkRows %d Progress %f ###"%(chunkLen,pr)
+                    print chunkStr
+                    sys.stdout.flush()
 
-
-
-def generateSYN(corpusLoc,part,chunkSize,vocabFile,typeVocabFile=None):
-    lock=mp.Lock()
-    processes=[]
-    for fileChunk in utils.grouper(range(100),20):
-        p=NGramGenerator(corpusClass=GoogleSynNGramCorpus,corpusLoc=corpusLoc,part=part,partsList=fileChunk,lock=lock,chunkSize=chunkSize,vocabFile=vocabFile,typeVocabFile=typeVocabFile)
-        processes.append(p)
+def generateSYN(corpusLoc,chunkSize,vocabFile,progressArray,processList,typeVocabFile=None):
+    fileNames=sorted(glob.glob(os.path.join(corpusLoc,"*.gz")))
+    perGroup=len(fileNames)//5
+    for fileList in utils.grouper(fileNames,perGroup):
+        p=NGramGenerator(corpusClass=GoogleSynNGramCorpus,fileNames=fileList,progressArray=progressArray,processIDX=len(processList),chunkSize=chunkSize,vocabFile=vocabFile,typeVocabFile=typeVocabFile)
+        processList.append(p)
         p.start()
-    for p in processes:
-        p.join()
+    return processList
 
 
-def generateFLAT(corpusLoc,chunkSize,vocabFile,whichPairs):
-    lock=mp.Lock()
+def generateFLAT(corpusLoc,chunkSize,vocabFile,whichPairs,progressVal=None):
+    if progressVal==None:
+        progressVal=mp.Value("f") #value to share the global progress, and also synchronize the output
+        progressVal.value=1.0 #the processes will rewrite this to the real value pretty much right away
     fileNames=sorted(glob.glob(os.path.join(corpusLoc,"*.gz")))
     processes=[]
     for fileName in fileNames: #One process per file in this case TODO: group?
-        p=NGramGenerator(GoogleFlatNGramCorpus,lock=lock,chunkSize=chunkSize,vocabFile=vocabFile,fileNames=[fileName],whichPairs=whichPairs)
+        p=NGramGenerator(GoogleFlatNGramCorpus,progressVal=progressVal,chunkSize=chunkSize,vocabFile=vocabFile,fileNames=[fileName],whichPairs=whichPairs)
         processes.append(p)
         p.start()
-    for p in processes:
-        p.join()
-
+    return processes
 if __name__=="__main__":
     import os
     os.nice(19)
-    generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled","arcs",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl","../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
-    #generateFLAT("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq",50000,"../models/eng-flatng-lookupIndex.pkl","L*")
+    progressArray=mp.Array("f",50) #I will hardly ever run more than 50
+    for i in range(len(progressArray)):
+        progressArray[i]=2.0 #impossibly high value
+    processList=[]
+    #processes+=generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled","arcs",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl","../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
+    generateSYN("/mnt/ssd/w2v_sng_training/arcs-repacked-uniq",50000,"../models/vocab/FIN-pbv3-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/FIN-pbv3-syntax-deptypes-lookupIndex.pkl")
+    #processes+=generateFLAT("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq",50000,"../models/vocab/ENG-google-flat-words-lookupIndex.pkl","L**R")
+    for p in processList:
+        p.join()
+
+    
     
 
