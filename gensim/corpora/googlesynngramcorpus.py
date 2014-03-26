@@ -42,7 +42,18 @@ class SynTreeNode(object):
 
 class GoogleSynNGramCorpus(object):
     
-    def __init__(self,dirName,part,fileSegments=None):
+    @classmethod
+    def from_filelist(cls,fileNames):
+        c=cls(fileNames=fileNames)
+        return c
+    
+    @classmethod
+    def from_glob(cls,globExpr):
+        fNames=sorted(glob.glob(globExpr))
+        return cls.from_filelist(fNames)
+
+    @classmethod
+    def from_dir_and_part(cls,dirName,part,fileSegments=None):
         """
         Initialize the corpus from a directory which contains the .gz files
         `dirName` = name of the directory
@@ -50,73 +61,69 @@ class GoogleSynNGramCorpus(object):
         `fileSegments` = iterable of integers or None. If given, lists which X's from the "X-of-N" files are to be taken. None -> all.
         """
         if part not in ("nodes,arcs,biarcs,triarcs,quadarcs,extended-arcs,extended-biarcs,extended-triarcs,extended-quadarcs".split(",")):
-            raise ValueError("Unknown part parameter. Use arcs,biarcs,...,extended-arcs,extended-biarcs.")
-        self.part=part
-        self.fileNames=sorted(glob.glob(os.path.join(dirName,part+".*-of-*.gz")))
-        if not self.fileNames:
+                raise ValueError("Unknown part parameter. Use arcs,biarcs,...,extended-arcs,extended-biarcs.")
+        fileNames=sorted(glob.glob(os.path.join(dirName,part+".*-of-*.gz")))
+        if not fileNames:
             raise ValueError("Corpus not found. No files like %s.*-of-*.gz in the directory %s."%(part,dirName))
         if fileSegments!=None:
             fileSegments=set(fileSegments)
             filteredFileNames=[]
-            for fName in self.fileNames:
+            for fName in fileNames:
                 match=re.search(part+r"\.([0-9]+)-of-[0-9]+\.gz$",fName)
                 if not match:
                     raise ValueError("Cannot parse filename %s - needed to restrict corpus files."%fName)
                 if int(match.group(1)) in fileSegments:
                     filteredFileNames.append(fName)
-            self.fileNames=filteredFileNames
+            fileNames=filteredFileNames
+        return cls.from_filelist(fileNames)
+
+    def __init__(self,fileNames):
+        self.fileNames=fileNames[:]
         self.gzBytesRead=0
         self.totalGzBytes=sum(os.path.getsize(fName) for fName in self.fileNames)
-
     
     def progress(self):
         """A [0,1] value reflecting the progress through the corpus in terms of (compressed) bytes read."""
         return float(self.gzBytesRead)/self.totalGzBytes
 
-    def lines(self,fileCount=-1):
+    def lines(self):
         """
-        Yields lines from the first `fileCount` files in the corpus as unicode strings.
+        Yields lines from the corpus as unicode strings.
         `fileCount` = How many files to visit? Set to -1 for all.
         """
         gzBytesReadCompleteFiles=0 #bytes read from *completed* files
-        if fileCount==-1:
-            fileCount=len(self.fileNames)
-        for fName in self.fileNames[:fileCount]:
+        for fName in self.fileNames:
             with gzip.open(fName,"r") as fIN:
                 for ngramLine in fIN:
-                    ngramLine=unicode(ngramLine.strip(),"utf-8") #strip and skip over (possible) empty lines
+                    ngramLine=unicode(ngramLine.rstrip(),"utf-8") #strip and skip over (possible) empty lines
                     if not ngramLine:
                         continue
                     self.gzBytesRead=fIN.myfileobj.tell()+gzBytesReadCompleteFiles #set the position in the collection
                     yield ngramLine
             gzBytesReadCompleteFiles+=os.path.getsize(fName)
 
-    def depTypes(self,analyzeFileCount=5):
+    def depTypes(self):
         """
         Return an iterator over dependency types in the first `analyzeFileCount` .gz files from the corpus.
         `analyzeFileCount` = How many .gz files to go through? Few will usually suffice unless you want exact stats (defaults to 5). Set to -1 if you want all.
         """
-        for ngramLine in self.lines(analyzeFileCount):
+        for ngramLine in self.lines():
             #lying<TAB>lying/VBG/dobj/0 and/CC/cc/1 dying/VBG/conj/1 thinking/VBG/dep/3<TAB>12<TAB>...
-            rootToken, tree, rest=ngramLine.split(u"\t",2) 
+            rootToken, tree, count, rest=ngramLine.split(u"\t",3) 
+            count=int(count)
             for token in tree.split():
                 #lying/VBG/dobj/0
                 rest,depType,headNumber=token.rsplit(u"/",2)
-                yield depType
+                yield depType, count
 
-    def iterPairs(self,fileCount=-1):
+    def iterPairs(self):
         """
         Return an iterator over (governor,dependent,depType,count) tuples. This currently only works if part=="arcs"
         `fileCount` = How many files to visit? Set to -1 for all (default)
         """
-        if self.part not in (u"arcs",):
-            raise ValueError("GDPairs can be generated only from the 'arcs' part of the corpus. See GoogleSynNGramCorpus.__init__()")
-        for ngramLine in self.lines(fileCount):
+        for ngramLine in self.lines():
             #includes<TAB>includes/VBZ/rcmod/0 telecom/NNP/dobj/1<TAB>count<TAB>...
-            try:
-                rootToken,dependency,count,rest=ngramLine.split(u"\t",3)
-            except ValueError:
-                rootToken,dependency,count=ngramLine.split(u"\t",2)
+            rootToken,dependency,count,rest=ngramLine.split(u"\t",3)
             count=int(count)
             tokens=[SynTreeNode(t) for t in dependency.split()]
             if len(tokens)>2: #This involves one of the functional words, skip (we will get the relevant deps elsewhere in the data)
@@ -125,22 +132,22 @@ class GoogleSynNGramCorpus(object):
             assert tokens[0].token==rootToken and tokens[0].governorIDX==0 and tokens[1].governorIDX in (1,2), ngramLine #any surprises somewhere?
             yield (tokens[0].token,tokens[1].token,tokens[1].dType,count)
 
-    def iterTokens(self,fileCount=-1):
+    def iterTokens(self):
         """
         Return a generator over (token,count) tuples. This only works if part=="nodes"
         `fileCount` = How many files to visit? Set to -1 for all (default)
         """
-        if self.part not in (u"nodes",):
-            raise ValueError("Tokens can be generated only from the 'nodes' part of the corpus. See GoogleSynNGramCorpus.__init__()")
+        #if self.part not in (u"nodes",):
+        #    raise ValueError("Tokens can be generated only from the 'nodes' part of the corpus. See GoogleSynNGramCorpus.__init__()")
         currentToken=None
         currentCount=0
-        for ngramLine in self.lines(fileCount):
+        for ngramLine in self.lines():
             #for every token, we'll have a series of lines like this:
             #bookers<TAB>bookers/NNP/ROOT/0<TAB>count<TAB>...      1882,1...
-            try:
-                token,specs,count,rest=ngramLine.split(u"\t",3)
-            except ValueError:
-                token,specs,count=ngramLine.split(u"\t",2)
+            cols=ngramLine.split(u"\t",3)
+            if len(cols)!=4: #skipping over some weird whitespace token cases
+                continue
+            token,specs,count,rest=cols
             if specs.count(u" ")!=0: #several nodes, ignore. TODO: is this supposed to be skipped or processed?
                 continue
             count=int(count)
@@ -162,10 +169,11 @@ if __name__=="__main__":
     #Quick test only
     import sys
     
-    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/quadarcs","quadarcs",fileSegments=range(5))
-    print C.fileNames
+    C=GoogleSynNGramCorpus.from_glob("/usr/share/ParseBank/google-syntax-ngrams/arcs/*.gz")
+    for x in C.iterPairs():
+        print x
     
-#    for t in C.depTypes(3):
+#    for t in C.depTypes():
 #        print t
 #    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/arcs","arcs")
 #    for g,d,t,c in C.iterGD():
