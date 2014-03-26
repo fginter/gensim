@@ -95,8 +95,15 @@ if __name__=="__main__":
         progressArray[i]=2.0 #impossibly high value
     processList=[]
     #processes+=generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled","arcs",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl","../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
-    generateSYN("/mnt/ssd/w2v_sng_training/arcs-repacked-uniq",50000,"../models/vocab/FIN-pbv3-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/FIN-pbv3-syntax-deptypes-lookupIndex.pkl")
-    #processes+=generateFLAT("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq",50000,"../models/vocab/ENG-google-flat-words-lookupIndex.pkl","L**R")
+    
+
+    lang="eng"
+
+    if lang=="fin":
+        generateSYN("/mnt/ssd/w2v_sng_training/arcs-repacked-uniq",50000,"../models/vocab/FIN-pbv3-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/FIN-pbv3-syntax-deptypes-lookupIndex.pkl")
+    elif lang=="eng":
+        generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
+
     for p in processList:
         p.join()
 
