@@ -11,7 +11,7 @@ import cython
 import numpy as np
 cimport numpy as np
 
-from libc.math cimport exp
+from libc.math cimport exp,pow
 from libc.string cimport memset
 
 from cpython cimport PyCObject_AsVoidPtr
@@ -194,6 +194,7 @@ def train_synngram_list(model, ngrams, alpha, _work):
     ngram_list_len = <int>min(MAX_NGRAMLIST_LEN, len(ngrams))
     for i in range(ngram_list_len):
         counts[i]=1.0-(1.0/(<REAL_t> ngrams[i][3]+1))
+        #counts[i]=1.0/(1.0+exp(-0.005*<REAL_t> ngrams[i][3]))	
         w0 = ngrams[i][0]
         if w0 is None:
             codelens_w0[i] = 0
