@@ -360,8 +360,6 @@ class Word2Vec(utils.SaveLoad):
                     break
                 # update the learning rate before every job
                 alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * progress))
-                #alpha=self.alpha #TODO: how to decrease this somehow reasonably over time?
-                # how many words did we train on? out-of-vocabulary (unknown) words do not count
                 train_synngram_list(self,job,alpha,work)
                 with lock:
                     ngram_count[0] += len(job)
@@ -390,8 +388,6 @@ class Word2Vec(utils.SaveLoad):
                 typeV=self.vocabTypes.index2vocab[int(dType)]
             else:
                 typeV=None
-#            assert int(g)==gV.index
-#            assert int(d)==dV.index
             currentJob.append((gV,dV,typeV,count))
         else:
             jobs.put((currentProgress,currentJob))
@@ -933,9 +929,8 @@ class LineSentence(object):
                 for line in fin:
                     yield line.split()
 
-def test_train_googlesyn(lang):
+def test_train_googlesyn(lang,max_a=0.08):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
-    a=0.08
 
     if lang=="fin":
         vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
@@ -945,25 +940,76 @@ def test_train_googlesyn(lang):
         vName="vocab/ENG-google-syntax-words-trainIndex.pkl"
         vTypeName="vocab/ENG-google-syntax-deptypes-trainIndex.pkl"
         dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt"
-    out=lang+"-syntax-300"
+    out="final-models-v1/"+lang+"-syntaxngrams-300"
 
-    m=Word2Vec(None, alpha=a, size=300, min_count=5, workers=10)
+    min_a=0.0001
+
+    m=Word2Vec(None, alpha=0.0, size=300, min_count=5, workers=10)
     m.vocab=Vocabulary.from_pickle(vName)
-    m.reset_weights()
-    f=open(dataIN,"rt")
-    m.min_alpha=a/100.0
-    m.trainOnSynNGrams(f,False)
-    f.close()
-    m.save_word2vec_format(out+"-notypes.bin",binary=True)
+
+    # m.reset_weights()
+    # a_from=max_a
+    # a_to=min_a
+    # m.alpha=a_from
+    # m.min_alpha=a_to
+    # f=open(dataIN,"rt")
+    # m.trainOnSynNGrams(f,False)
+    # f.close()
+    # m.save_word2vec_format(out+"-notypes-a%.3f.bin"%max_a,binary=True)
 
     m.vocabTypes=Vocabulary.from_pickle(vTypeName)
     m.vocabTypes.renumberPoints(len(m.vocab))
     m.reset_weights()
+    a_from=max_a
+    a_to=min_a
+    m.alpha=a_from
+    m.min_alpha=a_to
     f=open(dataIN,"rt")
-    m.min_alpha=a/100.0
     m.trainOnSynNGrams(f,True)
     f.close()
-    m.save_word2vec_format(out+"-withtypes.bin",binary=True)
+    m.save_word2vec_format(out+"-withtypes-sigm-a%.3f.bin"%max_a,binary=True)
+
+
+def test_train_googleflat(lang,max_a=0.08):
+    #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+
+    if lang=="fin":
+        vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
+        vTypeName="vocab/FIN-pbv3-syntax-deptypes-trainIndex.pkl"
+        dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn.txt"
+    elif lang=="eng":
+        vName="vocab/ENG-google-syntax-words-trainIndex.pkl"
+        vTypeName="vocab/ENG-google-syntax-deptypes-trainIndex.pkl"
+        dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt"
+    out="final-models-v1/"+lang+"-syntaxngrams-300"
+
+    min_a=0.0001
+
+    m=Word2Vec(None, alpha=0.0, size=300, min_count=5, workers=10)
+    m.vocab=Vocabulary.from_pickle(vName)
+    m.reset_weights()
+    
+    a_from=max_a
+    a_to=min_a
+    m.alpha=a_from
+    m.min_alpha=a_to
+    f=open(dataIN,"rt")
+    m.trainOnSynNGrams(f,False)
+    f.close()
+    m.save_word2vec_format(out+"-notypes-a%.3f.bin"%max_a,binary=True)
+
+    m.vocabTypes=Vocabulary.from_pickle(vTypeName)
+    m.vocabTypes.renumberPoints(len(m.vocab))
+    m.reset_weights()
+    a_from=max_a
+    a_to=min_a
+    m.alpha=a_from
+    m.min_alpha=a_to
+    f=open(dataIN,"rt")
+    m.trainOnSynNGrams(f,True)
+    f.close()
+    m.save_word2vec_format(out+"-withtypes-a%.3f.bin"%max_a,binary=True)
+
 
 def test_train_googleflat():
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
@@ -1094,8 +1140,12 @@ if __name__ == "__main__":
 
     #build_vocab_pickles()
     #test_train_conll()
-    eval(sys.argv[1])
-    func()
+    test_train_googlesyn("fin",0.08)
+    #test_train_googlesyn("eng",0.08)
+    #for a in (0.02, 0.16):
+    #    test_train_googlesyn("fin",a)
+    #    test_train_googlesyn("eng",a)
+    #eval(sys.argv[1])
     #test_train_googlesyn_fin()
     sys.exit()
 
