@@ -26,11 +26,16 @@ class NGramGenerator(mp.Process):
             d=vocabulary.get(d)
             tFWD,tREW=-1,-1
             if typeVocabulary!=None:
-                tVFWD,tVREW=typeVocabulary.get(dType+u"-gov"),typeVocabulary.get(dType+u"-dep")
-                if tVFWD!=None:
-                    tFWD=tVFWD.index
-                if tVREW!=None:
-                    tREW=tVREW.index
+                if dType=="R": #Dealing with flat n-gram data
+                    tFWD,tREW=typeVocabulary.get(dType).index,typeVocabulary.get("L").index
+                elif dType=="L":
+                    tFWD,tREW=typeVocabulary.get(dType).index,typeVocabulary.get("R").index
+                else: #Dealing with syntax data
+                    tVFWD,tVREW=typeVocabulary.get(dType+u"-gov"),typeVocabulary.get(dType+u"-dep")
+                    if tVFWD!=None:
+                        tFWD=tVFWD.index
+                    if tVREW!=None:
+                        tREW=tVREW.index
             if g!=None and d!=None:
                 res.append("\t".join((str(g.index),str(d.index),str(tFWD),str(count))))
                 res.append("\t".join((str(d.index),str(g.index),str(tREW),str(count))))
@@ -49,7 +54,7 @@ class NGramGenerator(mp.Process):
             corpus=self.corpusClass.from_filelist(fileNames=self.fileNames)
         #And which pairs should I generate? (relevant for ngram data)
         if "whichPairs" in self.__dict__:
-            it=corpus.iterPairs(whichPairs=self.whichPairs)
+            it=corpus.iterPairs(whichPairs=self.whichPairs) #flat ngram data
         else:
             it=corpus.iterPairs()
         for chunk in utils.grouper(it,self.chunkSize):
@@ -76,33 +81,33 @@ def generateSYN(corpusLoc,chunkSize,vocabFile,progressArray,processList,typeVoca
     return processList
 
 
-def generateFLAT(corpusLoc,chunkSize,vocabFile,whichPairs,progressVal=None):
-    if progressVal==None:
-        progressVal=mp.Value("f") #value to share the global progress, and also synchronize the output
-        progressVal.value=1.0 #the processes will rewrite this to the real value pretty much right away
+def generateFLAT(corpusLoc,chunkSize,vocabFile,progressArray,processList,whichPairs,typeVocabFile=None):
     fileNames=sorted(glob.glob(os.path.join(corpusLoc,"*.gz")))
-    processes=[]
-    for fileName in fileNames: #One process per file in this case TODO: group?
-        p=NGramGenerator(GoogleFlatNGramCorpus,progressVal=progressVal,chunkSize=chunkSize,vocabFile=vocabFile,fileNames=[fileName],whichPairs=whichPairs)
-        processes.append(p)
+    perGroup=len(fileNames)//3
+    for fileList in utils.grouper(fileNames,perGroup):
+        p=NGramGenerator(corpusClass=GoogleFlatNGramCorpus,fileNames=fileList,progressArray=progressArray,processIDX=len(processList),chunkSize=chunkSize,vocabFile=vocabFile,typeVocabFile=typeVocabFile,whichPairs=whichPairs)
+        processList.append(p)
         p.start()
-    return processes
+
+
 if __name__=="__main__":
     import os
     os.nice(19)
-    progressArray=mp.Array("f",50) #I will hardly ever run more than 50
+    progressArray=mp.Array("f",20) #I will hardly ever run more than 20
     for i in range(len(progressArray)):
         progressArray[i]=2.0 #impossibly high value
     processList=[]
     #processes+=generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled","arcs",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl","../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
     
 
-    lang="eng"
+    lang="eng-flat"
 
-    if lang=="fin":
+    if lang=="fin-syn":
         generateSYN("/mnt/ssd/w2v_sng_training/arcs-repacked-uniq",50000,"../models/vocab/FIN-pbv3-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/FIN-pbv3-syntax-deptypes-lookupIndex.pkl")
-    elif lang=="eng":
+    elif lang=="eng-syn":
         generateSYN("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled",50000,"../models/vocab/ENG-google-syntax-words-lookupIndex.pkl",progressArray,processList,typeVocabFile="../models/vocab/ENG-google-syntax-deptypes-lookupIndex.pkl")
+    elif lang=="eng-flat":
+        generateFLAT("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq",50000,"../models/vocab/ENG-google-flat-words-lookupIndex.pkl",progressArray,processList,"L**R","../models/vocab/ngram-positions-lookupIndex.pkl")
 
     for p in processList:
         p.join()

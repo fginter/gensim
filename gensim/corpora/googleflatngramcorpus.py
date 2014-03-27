@@ -28,6 +28,10 @@ class GoogleFlatNGramCorpus(object):
     """This class is for reading the ver 2 ngram corpus here:
     http://storage.googleapis.com/books/ngrams/books/datasetsv2.html
     """
+
+    @classmethod
+    def from_filelist(cls,fileNames):
+        return cls(fileNames=fileNames)
     
     def __init__(self,fileNames=None,part=None,corpusDir=None):
         """
@@ -63,15 +67,13 @@ class GoogleFlatNGramCorpus(object):
         """A [0,1] value reflecting the progress through the corpus in terms of (compressed) bytes read."""
         return float(self.gzBytesRead)/self.totalGzBytes
 
-    def lines(self,fileCount=-1):
+    def lines(self):
         """
         Yields lines from the first `fileCount` files in the corpus as unicode strings.
         `fileCount` = How many files to visit? Set to -1 for all.
         """
         gzBytesReadCompleteFiles=0 #bytes read from *completed* files
-        if fileCount==-1:
-            fileCount=len(self.fileNames)
-        for fName in self.fileNames[:fileCount]:
+        for fName in self.fileNames:
             with gzip.open(fName,"r") as fIN:
                 for ngramLine in fIN:
                     ngramLine=unicode(ngramLine.strip(),"utf-8") #strip and skip over (possible) empty lines
@@ -97,24 +99,24 @@ class GoogleFlatNGramCorpus(object):
         if whichPairs=="L*":
             l=tokens[0]
             for r in itertools.islice(tokens,1,len(tokens)):
-                yield (l,r,whichPairs,count)
+                yield (l,r,"R",count)
         elif whichPairs=="*R":
             r=tokens[-1]
             for l in itertools.islice(tokens,len(tokens)-1):
-                yield (l,r,whichPairs,count)
+                yield (r,l,"L",count)
         elif whichPairs=="LR":
-            yield tokens[0],tokens[-1], whichPairs, count
+            yield (tokens[0],tokens[-1], "R", count)
         elif whichPairs=="L**R":
             l=tokens[0]
             for r in itertools.islice(tokens,1,len(tokens)):
-                yield (l,r,whichPairs,count)
+                yield (l,r,"R",count)
             r=tokens[-1]
             for l in itertools.islice(tokens,len(tokens)-1):
-                yield (l,r,whichPairs,count)
+                yield (r,l,"L",count)
         
-    def iterPairs(self,whichPairs,fileCount=-1):
+    def iterPairs(self,whichPairs):
         """
-        Return a generator over (word1,word2,dist,count) tuples. Dist
+        Return a generator over (focusword,contextword,dist,count) tuples. Dist
         1 are neighboring words w1,w2, dist -1 are neighboring words
         w2,w1.
         
@@ -123,7 +125,7 @@ class GoogleFlatNGramCorpus(object):
         """
         currNGram=None
         currCount=0
-        for ngramLine in self.lines(fileCount):
+        for ngramLine in self.lines():
             cols=ngramLine.split(u"\t")
             if len(cols)==4: #orig format
                 ngram,year,count,bookcount=cols
