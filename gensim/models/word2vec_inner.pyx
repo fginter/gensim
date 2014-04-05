@@ -100,7 +100,7 @@ cdef void fast_sentence1_ng (
         if f <= -MAX_EXP or f >= MAX_EXP:
             continue
         f = EXP_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
-        g = (1 - depType_code[b] - f) * alpha
+        g = (1 - depType_code[b] - f) * alpha 
         saxpy(&size, &g, &syn1[row2], &ONE, work, &ONE)
         saxpy(&size, &g, &syn0[row1], &ONE, &syn1[row2], &ONE)
     saxpy(&size, &ONEF, work, &ONE, &syn0[row1], &ONE)
@@ -157,7 +157,7 @@ cdef void fast_sentence2(
 
 
 DEF MAX_SENTENCE_LEN = 1000
-DEF MAX_NGRAMLIST_LEN = 50000
+DEF MAX_NGRAMLIST_LEN = 100000
 
 #ngrams: list of (w0,w1,dtype,weight) tuples
 # here w0,w1,dtype are Vocab() instances

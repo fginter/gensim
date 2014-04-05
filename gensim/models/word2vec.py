@@ -84,6 +84,7 @@ from gensim._six.moves import xrange
 import itertools
 from gensim.corpora.googlesynngramcorpus import  GoogleSynNGramCorpus
 from gensim.corpora.googleflatngramcorpus import  GoogleFlatNGramCorpus
+from gensim.corpora.conllcorpus import CoNLLCorpus
 
 
 try:
@@ -184,7 +185,7 @@ class Vocabulary(dict):
             self[w]=v
         assert len(self)==len(self.index2word)
 
-    def build_vocab_from_unigram_count_iterator(self, words, min_count=5):
+    def build_vocab_from_unigram_count_iterator(self, words, min_count=5, lowercaseAll=False):
         """
         Build vocabulary from an iterator which produces ready-made
         (word,count) tuples. We do *not* assume that each word is generated only
@@ -196,6 +197,8 @@ class Vocabulary(dict):
         self.clear()
         vocab={}
         for counter,(word,count) in enumerate(words):
+            if lowercaseAll:
+                word=word.lower()
             if word in vocab:
                 vocab[word].count += count
             else:
@@ -325,7 +328,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, dataIN, useTypes):
+    def trainOnSynNGrams(self, dataIN, useTypes, flatCounts=False, minCount=1, subsample=1.0):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -376,18 +379,27 @@ class Word2Vec(utils.SaveLoad):
         currentProgress=0.0
         currentJob=[]
         for line in dataIN:
-            if line.startswith("### ChunkRows"):
-                if currentJob:
+            if line.startswith("###"):
+                progress=float(re.search("Progress (.*?) #",line).group(1))
+                if progress>subsample:
+                    break
+                progress*=1.0/subsample
+                if len(currentJob)>=45000 or progress>currentProgress+0.03:# we seem to have enough of data, let's submit the job
                     jobs.put((currentProgress,currentJob))
-                currentJob=[]
-                currentProgress=float(re.search("Progress (.*?) #",line).group(1))
+                    currentJob=[]
+                    currentProgress=progress
                 continue
-            g,d,dType,count=line.split("\t")
-            gV,dV,count=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)],int(count)
+            g,d,dType,count=line.split()
+            count=int(count)
+            if count<minCount:
+                continue
+            gV,dV=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)]
             if useTypes:
                 typeV=self.vocabTypes.index2vocab[int(dType)]
             else:
                 typeV=None
+            if flatCounts:
+                count=2
             currentJob.append((gV,dV,typeV,count))
         else:
             jobs.put((currentProgress,currentJob))
@@ -552,6 +564,7 @@ class Word2Vec(utils.SaveLoad):
         vocabLen=len(self.vocab)
         if "vocabTypes" in self.__dict__ and self.vocabTypes!=None:
             vocabLen+=len(self.vocabTypes)
+        logger.info("Reseting syn0 len %d and syn1 len %d"%(len(self.vocab),vocabLen))
         self.syn1 = zeros((vocabLen, self.layer1_size), dtype=REAL)
         self.syn0norm = None
 
@@ -929,110 +942,80 @@ class LineSentence(object):
                 for line in fin:
                     yield line.split()
 
-def test_train_googlesyn(lang,max_a=0.08):
+
+def test_train_googlesyn(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount=2,downsample=1.0,outdir="trained_models"):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
 
     if lang=="fin":
         vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
-        vTypeName="vocab/FIN-pbv3-syntax-deptypes-trainIndex.pkl"
-        dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn.txt"
-    elif lang=="eng":
-        vName="vocab/ENG-google-syntax-words-trainIndex.pkl"
-        vTypeName="vocab/ENG-google-syntax-deptypes-trainIndex.pkl"
-        dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt"
-    out="final-models-v1/"+lang+"-syntaxngrams-300"
+        if task=="withtypes":
+            vTypeName="vocab/FIN-pbv3-123arc-deptypes-trainIndex.pkl"
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn_123arc.txt"
+        elif task=="notypes":
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn_123arc.txt"
+        else:
+            raise ValueError("Unknown task "+task)
+    # elif lang=="eng":
+    #     vName="vocab/ENG-google-flat-words-trainIndex.pkl"
+    #     vTypeName="vocab/ngram-positions-trainIndex.pkl"
+    #     dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_flat.txt"
 
-    min_a=0.0001
+    out=outdir+"/%s-syn123grams-%s-alpha%0.4f-div%d-flatcounts%s-minCount%d-sample%0.2f.bin"%(lang,task,max_a,divider,str(flatCounts),minCount,downsample)
 
-    m=Word2Vec(None, alpha=0.0, size=300, min_count=5, workers=10)
+
+    min_a=max_a/float(divider)
+
+    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=10)
     m.vocab=Vocabulary.from_pickle(vName)
-
-    # m.reset_weights()
-    # a_from=max_a
-    # a_to=min_a
-    # m.alpha=a_from
-    # m.min_alpha=a_to
-    # f=open(dataIN,"rt")
-    # m.trainOnSynNGrams(f,False)
-    # f.close()
-    # m.save_word2vec_format(out+"-notypes-a%.3f.bin"%max_a,binary=True)
-
-    m.vocabTypes=Vocabulary.from_pickle(vTypeName)
-    m.vocabTypes.renumberPoints(len(m.vocab))
+    useTypes=False
+    if task!="notypes":
+        m.vocabTypes=Vocabulary.from_pickle(vTypeName)
+        m.vocabTypes.renumberPoints(len(m.vocab))
+        useTypes=True
     m.reset_weights()
-    a_from=max_a
-    a_to=min_a
-    m.alpha=a_from
-    m.min_alpha=a_to
     f=open(dataIN,"rt")
-    m.trainOnSynNGrams(f,True)
+    m.trainOnSynNGrams(f,useTypes=useTypes,flatCounts=flatCounts,minCount=minCount,subsample=downsample)
     f.close()
-    m.save_word2vec_format(out+"-withtypes-sigm-a%.3f.bin"%max_a,binary=True)
+    m.save_word2vec_format(out,binary=True)
 
 
-def test_train_googleflat(lang,max_a=0.08):
+
+def test_train_googleflat(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount=2,downsample=1.0,outdir="trained_models"):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
 
     if lang=="fin":
         vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
-        vTypeName="vocab/FIN-pbv3-syntax-deptypes-trainIndex.pkl"
-        dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_syn.txt"
-    elif lang=="eng":
-        vName="vocab/ENG-google-syntax-words-trainIndex.pkl"
-        vTypeName="vocab/ENG-google-syntax-deptypes-trainIndex.pkl"
-        dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_syn.txt"
-    out="final-models-v1/"+lang+"-syntaxngrams-300"
+        if task=="withnumericalpositions":
+            vTypeName="vocab/ngram-numerical-positions-trainIndex.pkl"
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_numeric.txt"
+        elif task=="nopositions":
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_numeric.txt"
+        elif task=="lrpositions":
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_lr.txt"
+            vTypeName="vocab/ngram-lr-positions-trainIndex.pkl"
+        else:
+            raise ValueError("Unknown task "+task)
+    # elif lang=="eng":
+    #     vName="vocab/ENG-google-flat-words-trainIndex.pkl"
+    #     vTypeName="vocab/ngram-positions-trainIndex.pkl"
+    #     dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_flat.txt"
 
-    min_a=0.0001
+    out=outdir+"/%s-flatngrams-%s-alpha%0.4f-div%d-flatcounts%s-minCount%d-sample%0.2f.bin"%(lang,task,max_a,divider,str(flatCounts),minCount,downsample)
 
-    m=Word2Vec(None, alpha=0.0, size=300, min_count=5, workers=10)
+    min_a=max_a/float(divider)
+
+    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=10)
     m.vocab=Vocabulary.from_pickle(vName)
+    useTypes=False
+    if task!="nopositions":
+        m.vocabTypes=Vocabulary.from_pickle(vTypeName)
+        m.vocabTypes.renumberPoints(len(m.vocab))
+        useTypes=True
     m.reset_weights()
-    
-    a_from=max_a
-    a_to=min_a
-    m.alpha=a_from
-    m.min_alpha=a_to
     f=open(dataIN,"rt")
-    m.trainOnSynNGrams(f,False)
+    m.trainOnSynNGrams(f,useTypes=useTypes,flatCounts=flatCounts,minCount=minCount,subsample=downsample)
     f.close()
-    m.save_word2vec_format(out+"-notypes-a%.3f.bin"%max_a,binary=True)
-
-    m.vocabTypes=Vocabulary.from_pickle(vTypeName)
-    m.vocabTypes.renumberPoints(len(m.vocab))
-    m.reset_weights()
-    a_from=max_a
-    a_to=min_a
-    m.alpha=a_from
-    m.min_alpha=a_to
-    f=open(dataIN,"rt")
-    m.trainOnSynNGrams(f,True)
-    f.close()
-    m.save_word2vec_format(out+"-withtypes-a%.3f.bin"%max_a,binary=True)
-
-
-def test_train_googleflat():
-    #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
-    alpha=0.02
-    m=Word2Vec(None, alpha=0.02, size=300, min_count=5, workers=10)
-    m.vocab=Vocabulary.from_pickle("eng-flatng-trainIndex.pkl")
-    #for a in (0.01,0.02,0.04,0.005,0.002,0.0005):
-    a=0.1
-    m.alpha=a
-    m.min_alpha=a/100.0
-    m.trainOnSynNGrams(sys.stdin, direction=0)
-    m.save_word2vec_format("eng-300-flatng-a0.1.bin",binary=True)
-
-
-def test_train_conll_syn():
-    from gensim.corpora.conllcorpus import  CoNLLCorpus
-    C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
-    #C=CoNLLCorpus("/home/ginter/pbank.tiny.conll09")
-    m=Word2Vec(None, size=200, min_count=5, workers=10)
-    m.vocab.build_vocab(C.iterSentences(max_count=-1),m)
-    for direction in (0,1,2):
-        m.trainOnCoNLLSynNGrams(C, chunksize=30000,direction=direction)
-        m.save_word2vec_format("gsim_w2v_wforms_syn0_dir%d.bin"%direction,binary=True)
+    m.save_word2vec_format(out,binary=True)
 
 def pickle_vocab(outName,v):
     """This will produce two versions of the vocabulary:
@@ -1061,13 +1044,48 @@ def dTypeIT(it):
 def build_ngram_vocab():
     """Builds a dummy vocabulary for various ngram positions"""
     v=Vocabulary()
-    v.build_vocab_from_unigram_count_iterator(((x,1) for x in u"-4 -3 -2 -1 +1 +2 +3 +4 L R".split()),0) #I'll code these as numbers - left, + right, or L/R for left-right context
-    pickle_vocab("vocab/ngram-positions",v)
+    x={"R1":100,"R2":80,"R3":60,"R4":40,"L1":100,"L2":80,"L3":60,"L4":40} #actual distribution of counts for 100 tokens using the "pretend 5 context" sampling
+    v.build_vocab_from_unigram_count_iterator(x.iteritems()) #I'll code these as numbers - left, + right, or L/R for left-right context
+    pickle_vocab("vocab/ngram-numerical-positions",v)
+    v.build_vocab_from_unigram_count_iterator([("L",100),("R",100)]) 
+    pickle_vocab("vocab/ngram-lr-positions",v)
 
 def build_vocab_pickles():
     import cPickle as pickle
     import glob
     import traceback
+
+
+    try:
+        #Get this one from stdin
+        def fromstdin():
+            counter=0
+            for line in sys.stdin:
+                line=line.strip()
+                if not line:
+                    continue
+                yield line+"-dep",1
+                yield line+"-gov",1
+                counter+=1
+        v=Vocabulary()
+        v.build_vocab_from_unigram_count_iterator(fromstdin(),1)
+        pickle_vocab("vocab/FIN-pbv3-12arc-deptypes",v)
+    except:
+        traceback.print_exc()
+    return
+
+
+
+    try:
+        v=Vocabulary()
+        UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
+        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(),30,lowercaseAll=True)
+        pickle_vocab("vocab/ENG-google-flatngram-words",v)
+    except:
+        traceback.print_exc()
+        
+    return
+
 
     try:
         v=Vocabulary()
@@ -1106,19 +1124,6 @@ def build_vocab_pickles():
 
     return
 
-    try:
-        v=Vocabulary()
-        UGramsC=GoogleFlatNGramCorpus(glob.glob("/usr/share/ParseBank/google-ngrams/1grams/*.gz"))
-        v.build_vocab_from_unigram_count_iterator(UGramsC.iterTokens(),cutoff)
-        pickle_vocab("vocab/ENG-google-flatngram-words",v)
-    except:
-        traceback.print_exc()
-        
-    
-    
-    
-    
-
 
 if __name__ == "__main__":
     import os
@@ -1132,20 +1137,18 @@ if __name__ == "__main__":
     #sys.exit()
     
     #build_vocab_pickle("/mnt/ssd/w2v_sng_training","fin-full",5)
-    #build_vocab_pickle("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",20)
-    #sys.exit()
+#    build_vocab_pickles()#("/usr/share/ParseBank/google-syntax-ngrams/nodes","eng-full",30)
+#    sys.exit()
     
     #build_ngram_vocab()
     #sys.exit()
 
-    #build_vocab_pickles()
+#    build_vocab_pickles()
+ #   sys.exit()
     #test_train_conll()
-    test_train_googlesyn("fin",0.08)
+    #test_train_googlesyn("fin",0.08)
     #test_train_googlesyn("eng",0.08)
-    #for a in (0.02, 0.16):
-    #    test_train_googlesyn("fin",a)
-    #    test_train_googlesyn("eng",a)
-    #eval(sys.argv[1])
+    eval(sys.argv[1])
     #test_train_googlesyn_fin()
     sys.exit()
 
