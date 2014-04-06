@@ -395,6 +395,9 @@ class Word2Vec(utils.SaveLoad):
                 continue
             gV,dV=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)]
             if useTypes:
+                tIDX=int(dType)
+                if tIDX==-1:
+                    continue
                 typeV=self.vocabTypes.index2vocab[int(dType)]
             else:
                 typeV=None
@@ -965,7 +968,7 @@ def test_train_googlesyn(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount
 
     min_a=max_a/float(divider)
 
-    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=10)
+    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=5)
     m.vocab=Vocabulary.from_pickle(vName)
     useTypes=False
     if task!="notypes":
@@ -995,6 +998,31 @@ def test_train_googleflat(lang,task,max_a=0.08,divider=5,flatCounts=True,minCoun
             vTypeName="vocab/ngram-lr-positions-trainIndex.pkl"
         else:
             raise ValueError("Unknown task "+task)
+    elif lang=="fin-csc":
+        vName="vocab/FIN-pbv3-syntax-words-trainIndex.pkl"
+        if task=="withnumericalpositions":
+            vTypeName="vocab/ngram-numerical-positions-trainIndex.pkl"
+            dataIN="/wrk/ginter/fin_flat_numeric_4p.txt"
+        elif task=="nopositions":
+            dataIN="/wrk/ginter/fin_flat_numeric_4p.txt"
+        elif task=="pospositions":
+            dataIN="/wrk/ginter/fin_flat_POS.txt"
+            vTypeName="vocab/FIN-pbv3-pospositions-trainIndex.pkl"
+        else:
+            raise ValueError("Unknown task "+task)
+    elif lang=="eng-csc":
+        vName="vocab/ENG-google-flat-words-trainIndex.pkl"
+        if task=="withnumericalpositions":
+            vTypeName="vocab/ngram-numerical-positions-trainIndex.pkl"
+            dataIN="/wrk/ginter/eng_flat_numeric.txt"
+        elif task=="nopositions":
+            dataIN="/wrk/ginter/eng_flat_numeric.txt"
+        elif task=="pospositions":
+            dataIN="/wrk/ginter/eng_flat_POS.txt"
+            vTypeName="vocab/ENG-google-pospositions-trainIndex.pkl"
+        else:
+            raise ValueError("Unknown task "+task)
+
     # elif lang=="eng":
     #     vName="vocab/ENG-google-flat-words-trainIndex.pkl"
     #     vTypeName="vocab/ngram-positions-trainIndex.pkl"
@@ -1004,8 +1032,11 @@ def test_train_googleflat(lang,task,max_a=0.08,divider=5,flatCounts=True,minCoun
 
     min_a=max_a/float(divider)
 
-    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=10)
+    logger.info("Instantiating the model")
+    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=3)
+    logger.info("Loading vocabulary")
     m.vocab=Vocabulary.from_pickle(vName)
+    logger.info("Done")
     useTypes=False
     if task!="nopositions":
         m.vocabTypes=Vocabulary.from_pickle(vTypeName)
@@ -1054,6 +1085,22 @@ def build_vocab_pickles():
     import cPickle as pickle
     import glob
     import traceback
+
+
+    try:
+        #Get this one from stdin
+        def fromstdin():
+            for line in sys.stdin:
+                line=line.strip()
+                if not line:
+                    continue
+                yield line,1
+        v=Vocabulary()
+        v.build_vocab_from_unigram_count_iterator(fromstdin(),1)
+        pickle_vocab("vocab/FIN-pbv3-flatngram-POSpositions",v)
+    except:
+        traceback.print_exc()
+    return
 
 
     try:
@@ -1127,7 +1174,7 @@ def build_vocab_pickles():
 
 if __name__ == "__main__":
     import os
-    os.nice(19)
+#    os.nice(19)
 
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))
