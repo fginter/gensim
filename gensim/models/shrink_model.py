@@ -8,6 +8,6 @@ parser.add_argument('source_model',  help='Source model')
 parser.add_argument('target_model',  help='Target model')
 options = parser.parse_args()
 
-w=Word2Vec.load_word2vec_format(options.source_model,binary=True)
+w=Word2Vec.load_word2vec_format(options.source_model,binary=True,norm_only=False,init_norms=False)
 w.save_word2vec_format(options.target_model,binary=True,max_rank=options.max_rank)
 
