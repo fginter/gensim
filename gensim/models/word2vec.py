@@ -569,23 +569,29 @@ class Word2Vec(utils.SaveLoad):
         self.syn0norm = None
 
 
-    def save_word2vec_format(self, fname, fvocab=None, binary=False):
+    def save_word2vec_format(self, fname, fvocab=None, binary=False, max_rank=None):
         """
         Store the input-hidden weight matrix in the same format used by the original
         C word2vec-tool, for compatibility.
-
+        
+        `max_rank` = Store first `max_rank` vectors, ignore rest
         """
+        #TODO: -> max_rank
+        size,dim=self.syn0.shape
+        if max_rank!=None and max_rank>0:
+            size=min(size,max_rank)
         if fvocab is not None:
             logger.info("Storing vocabulary in %s" % (fvocab))
             with utils.smart_open(fvocab, 'wb') as vout:
-                for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
+                for word, vocab in itertools.islice(sorted(iteritems(self.vocab), key=lambda item: -item[1].count),size):
                     vout.write("%s %s\n" % (word, vocab.count))
-        logger.info("storing %sx%s projection weights into %s" % (len(self.vocab), self.layer1_size, fname))
+        logger.info("storing %sx%s projection weights into %s" % (size, self.layer1_size, fname))
         assert (len(self.vocab), self.layer1_size) == self.syn0.shape
         with utils.smart_open(fname, 'wb') as fout:
-            fout.write("%s %s\n" % self.syn0.shape)
             # store in sorted order: most frequent words at the top
-            for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
+            out_seq=itertools.islice(sorted(iteritems(self.vocab), key=lambda item: -item[1].count),size)
+            fout.write("%s %s\n" % (size,dim))
+            for word, vocab in out_seq:
                 word = utils.to_utf8(word)  # always store in utf8
                 row = self.syn0[vocab.index]
                 if binary:
@@ -595,7 +601,7 @@ class Word2Vec(utils.SaveLoad):
 
 
     @classmethod
-    def load_word2vec_format(cls, fname, fvocab=None, binary=False, norm_only=True):
+    def load_word2vec_format(cls, fname, fvocab=None, binary=False, norm_only=True, init_norms=True):
         """
         Load the input-hidden weight matrix from the original C word2vec-tool format.
 
@@ -640,7 +646,7 @@ class Word2Vec(utils.SaveLoad):
                     else:
                         logger.warning("vocabulary file is incomplete")
                         result.vocab[word] = Vocab(index=line_no, count=None)
-                    result.index2word.append(word)
+                    result.vocab.index2word.append(word)
                     result.syn0[line_no] = fromstring(fin.read(binary_len), dtype=REAL)
             else:
                 for line_no, line in enumerate(fin):
@@ -655,10 +661,11 @@ class Word2Vec(utils.SaveLoad):
                     else:
                         logger.warning("vocabulary file is incomplete")
                         result.vocab[word] = Vocab(index=line_no, count=None)
-                    result.index2word.append(word)
+                    result.vocab.index2word.append(word)
                     result.syn0[line_no] = weights
         logger.info("loaded %s matrix from %s" % (result.syn0.shape, fname))
-        result.init_sims(norm_only)
+        if init_norms:
+            result.init_sims(norm_only)
         return result
 
 
