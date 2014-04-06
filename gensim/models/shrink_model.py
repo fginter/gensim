@@ -1,6 +1,8 @@
 import sys
 from word2vec import Word2Vec
 import argparse
+import logging
+logging.basicConfig(level=logging.INFO)
 
 parser = argparse.ArgumentParser(description='Shrink a .bin model to a max_rank',usage='%(prog)s options source.bin target.bin')
 parser.add_argument('-m','--max_rank', type=int, required=True, help='Max rank to use')
