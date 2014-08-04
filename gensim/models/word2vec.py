@@ -65,6 +65,7 @@ import time
 import threading
 import os.path
 import re
+import codecs
 try:
     from queue import Queue
 except ImportError:
@@ -91,7 +92,7 @@ try:
     # try to compile and use the faster cython version
     import pyximport
     pyximport.install(setup_args={"include_dirs": get_include()})
-    from word2vec_inner import train_sentence, train_synngram_list, FAST_VERSION
+    from word2vec_inner import train_sentence, train_synngram_list, train_icd_list, FAST_VERSION
 except:
     import traceback
     traceback.print_exc()
@@ -328,7 +329,7 @@ class Word2Vec(utils.SaveLoad):
             self.train(sentences)
 
 
-    def trainOnSynNGrams(self, dataIN, useTypes, flatCounts=False, minCount=1, subsample=1.0):
+    def trainOnSynNGrams(self, dataIN, useTypes, flatCounts=False, minCount=1, subsample=1.0, regularSave=None):
         """
         Train the (unitialized) model on google syntactic ngram corpus
         located in the directory corpusLoc. We only need nodes and
@@ -352,6 +353,8 @@ class Word2Vec(utils.SaveLoad):
 
         ngram_count=[0]
         start, next_report = time.time(), [1.0]
+        if regularSave:
+            next_save=start+regularSave[1]
 
         def worker_train():
             """Train the model, lifting lists of ngrams from the jobs queue."""
@@ -378,8 +381,13 @@ class Word2Vec(utils.SaveLoad):
         
         currentProgress=0.0
         currentJob=[]
-        for line in dataIN:
+        for lineCounter,line in enumerate(dataIN):
             if line.startswith("###"):
+                if regularSave!=None and time.time()>next_save:
+                    self.save_word2vec_format(regularSave[0]+"."+str(int(time.time())%10)+".bin",binary=True,max_rank=600000)
+                    with open(regularSave[0]+".log","a") as flog:
+                        print >> flog, time.asctime(), currentProgress, lineCounter
+                    next_save=time.time()+regularSave[1]
                 progress=float(re.search("Progress (.*?) #",line).group(1))
                 if progress>subsample:
                     break
@@ -395,7 +403,10 @@ class Word2Vec(utils.SaveLoad):
                 continue
             gV,dV=self.vocab.index2vocab[int(g)],self.vocab.index2vocab[int(d)]
             if useTypes:
-                typeV=self.vocabTypes.index2vocab[int(dType)]
+                tidx=int(dType)
+                if tidx==-1:
+                    continue
+                typeV=self.vocabTypes.index2vocab[tidx]
             else:
                 typeV=None
             if flatCounts:
@@ -422,6 +433,111 @@ class Word2Vec(utils.SaveLoad):
             (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
 
         return ngram_count[0]
+
+
+
+
+
+
+
+
+
+
+
+
+    def trainICD(self, dataIN, progress, flatCounts=False, minCount=0.0, subsample=1.0, regularSave=None):
+        """
+        Train the (unitialized) model on google syntactic ngram corpus
+        located in the directory corpusLoc. We only need nodes and
+        arcs for now. 
+
+        `chunksize` =  how many n-grams constitute a training batch for one worker thread
+        `part_subdirs` = True if corpusLoc has a subdirectory for every part of the corpus separately (e.g. corpusLoc/nodes, corpusLoc/arcs), False if you have all the data downloaded in one place.
+        
+        """
+        if FAST_VERSION < 0:
+            import warnings
+            warnings.warn("Cython compilation failed, training will be slow. Do you have Cython installed? `pip install cython`")
+            sys.exit()
+
+        
+        logger.info("training model with %i workers on %i vocabulary and %i features" % (self.workers, len(self.vocab), self.layer1_size))
+
+        #...the bit below is copied from train() and modified to work with the n-grams
+        jobs = Queue(maxsize=2 * self.workers)  # buffer ahead only a limited number of jobs.. this is the reason we can't simply use ThreadPool :(
+        lock = threading.Lock()  # for shared state (=number of ngrams trained so far, log reports...)
+
+        ngram_count=[0]
+        start, next_report = time.time(), [1.0]
+        if regularSave:
+            next_save=start+regularSave[1]
+
+        def worker_train():
+            """Train the model, lifting lists of ngrams from the jobs queue."""
+            work = zeros(self.layer1_size, dtype=REAL)  # each thread must have its own work memory
+
+            while True:
+                progress,job = jobs.get()
+                if job is None:  # data finished, exit
+                    break
+                # update the learning rate before every job
+                alpha = max(self.min_alpha, self.alpha * (1 - 1.0 * progress))
+                train_icd_list(self,job,alpha,work)
+                with lock:
+                    ngram_count[0] += len(job)
+                    elapsed = time.time() - start
+                    if elapsed >= next_report[0]:
+                        logger.info("PROGRESS: %.2f%% finished. Running at %.0f ngrams/s."%(progress*100.0, ngram_count[0]/elapsed))
+                        next_report[0] = elapsed + 1.0  # don't flood the log, wait at least a second between progress reports
+
+        workers = [threading.Thread(target=worker_train) for _ in xrange(self.workers)]
+        for thread in workers:
+            thread.daemon = True  # make interrupting the process with ctrl+c easier
+            thread.start()
+        
+        currentProgress=0.0
+        currentJob=[]
+        #total_lines=159083274 #Oh god! How can I?
+        for lineCounter,line in enumerate(dataIN):
+            #progress=float(lineCounter)/total_lines
+            #if progress>subsample:
+            #    break
+            #progress*=1.0/subsample
+            if len(currentJob)>=45000:
+                jobs.put((progress,currentJob))
+                currentJob=[]
+            wf,icd,weight=line.split("\t")
+            wf=unicode(wf,"utf-8")
+            icd=unicode(icd,"utf-8")
+            weight=float(weight)
+            wfV=self.vocab.index2vocab[self.vocab_l.get(wf).index] #oh god!
+            icdV=self.vocabICD.index2vocab[self.vocabICD_l.get(icd).index] #oh god!
+            currentJob.append((wfV,icdV,weight))
+        else:
+            jobs.put((progress,currentJob))
+                
+
+        # convert input strings to Vocab objects (or None for OOV words), and start filling the jobs queue
+#        no_oov = ((self.vocab.get(gov,None),self.vocab.get(dep,None),dType,count) for (gov,dep,dType,count) in ArcC.iterGD())
+#        for job_no, job in enumerate(utils.grouper(no_oov, chunksize)):
+#            logger.debug("putting job #%i in the queue, qsize=%i" % (job_no, jobs.qsize()))
+#            jobs.put((ArcC.progress(),job))
+        logger.info("reached the end of input; waiting to finish %i outstanding jobs" % jobs.qsize())
+        for _ in xrange(self.workers):
+            jobs.put((1.0,None))  # give the workers heads up that they can finish -- no more work!
+
+        for thread in workers:
+            thread.join()
+
+        elapsed = time.time() - start
+        logger.info("training on %i ngrams took %.1fs, %.0f ngram/s" %
+            (ngram_count[0], elapsed, ngram_count[0] / elapsed if elapsed else 0.0))
+
+        return ngram_count[0]
+
+
+
+
 
 
     # def trainOnCoNLLSynNGrams(self, corpus, chunksize=10000, direction=0):
@@ -621,7 +737,7 @@ class Word2Vec(utils.SaveLoad):
                     word, count = line.strip().split()
                     counts[word] = int(count)
 
-        logger.info("loading projection weights from %s" % (fname))
+        logger.info("loading projection weights from %s (binary? %s)" % (fname, str(binary)))
         with utils.smart_open(fname) as fin:
             header = fin.readline()
             vocab_size, layer1_size = map(int, header.split())  # throws for invalid file format
@@ -950,6 +1066,15 @@ class LineSentence(object):
                     yield line.split()
 
 
+def test_train_stream(useTypes,out):
+    m=Word2Vec(None, alpha=0.04, size=300, min_count=1, workers=4)
+    m.vocab=Vocabulary.from_pickle("/home/ginter/gensim-myfork/gensim/models/vocab/FIN-pbv3-syntax-words-trainIndex.pkl")
+    if useTypes:
+        m.vocabTypes=Vocabulary.from_pickle("/home/ginter/gensim-myfork/gensim/models/vocab/FIN-pbv3-123arc-deptypes-trainIndex.pkl")
+        m.vocabTypes.renumberPoints(len(m.vocab))
+    m.reset_weights()
+    m.trainOnSynNGrams(sys.stdin,useTypes=useTypes,flatCounts=True,minCount=1,subsample=1.0,regularSave=(out,60*60))
+
 def test_train_googlesyn(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount=2,downsample=1.0,outdir="trained_models"):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
 
@@ -987,7 +1112,34 @@ def test_train_googlesyn(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount
 
 
 
-def test_train_googleflat(lang,task,max_a=0.08,divider=5,flatCounts=True,minCount=2,downsample=1.0,outdir="trained_models"):
+def test_train_icd(max_a=0.08,divider=5,flatCounts=False,minCount=0.0,downsample=1.0,outdir="icd-trained-models"):
+    #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
+
+    vName="vocab/CLFIN-wf-trainIndex.pkl"
+    vName_l="vocab/CLFIN-wf-lookupIndex.pkl"
+    vTypeName="vocab/CLFIN-icd-trainIndex.pkl"
+    vTypeName_l="vocab/CLFIN-icd-lookupIndex.pkl"
+    dataIN="/home/ginter/w2v-icd/train.txt"
+    out=outdir+"/m.bin"#%(lang,task,max_a,divider,str(flatCounts),minCount,downsample)
+
+    min_a=max_a/float(divider)
+
+    m=Word2Vec(None, alpha=max_a, size=300, min_count=minCount, workers=10)
+    m.vocab=Vocabulary.from_pickle(vName)
+    m.vocab_l=Vocabulary.from_pickle(vName_l)
+    m.vocabICD=Vocabulary.from_pickle(vTypeName)
+    m.vocabICD_l=Vocabulary.from_pickle(vTypeName_l)
+    m.reset_weights()
+    for i in range(1,11):
+        progress=float(i)/11.0
+        f=open(dataIN,"rt")
+        m.trainICD(f,progress,flatCounts=flatCounts,minCount=minCount,subsample=downsample)
+        f.close()
+    m.save_word2vec_format(out,binary=True)
+
+
+
+def test_train_googleflat(lang,task,max_a=0.04,divider=5,flatCounts=True,minCount=2,downsample=1.0,outdir="trained_models"):
     #from gensim.corpora.googlesynngramcorpus import GoogleSynNGramCorpus
 
     if lang=="fin":
@@ -997,11 +1149,17 @@ def test_train_googleflat(lang,task,max_a=0.08,divider=5,flatCounts=True,minCoun
             dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_numeric.txt"
         elif task=="nopositions":
             dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_numeric.txt"
-        elif task=="lrpositions":
-            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_lr.txt"
-            vTypeName="vocab/ngram-lr-positions-trainIndex.pkl"
+        elif task=="pospositions":
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/fin_flat_POS.txt"
+            vTypeName="vocab/FIN-pbv3-pospositions-trainIndex.pkl"
         else:
             raise ValueError("Unknown task "+task)
+    elif lang=="eng":
+        vName="vocab/ENG-google-flat-words-trainIndex.pkl"
+        if task=="pospositions":
+            dataIN="/home/ginter/gensim-myfork/gensim/corpora/eng_flat_POS.txt"
+            vTypeName="vocab/ENG-google-pospositions-trainIndex.pkl"
+
     # elif lang=="eng":
     #     vName="vocab/ENG-google-flat-words-trainIndex.pkl"
     #     vTypeName="vocab/ngram-positions-trainIndex.pkl"
@@ -1057,6 +1215,7 @@ def build_ngram_vocab():
     v.build_vocab_from_unigram_count_iterator([("L",100),("R",100)]) 
     pickle_vocab("vocab/ngram-lr-positions",v)
 
+
 def build_vocab_pickles():
     import cPickle as pickle
     import glob
@@ -1065,18 +1224,20 @@ def build_vocab_pickles():
 
     try:
         #Get this one from stdin
-        def fromstdin():
-            counter=0
-            for line in sys.stdin:
-                line=line.strip()
-                if not line:
-                    continue
-                yield line+"-dep",1
-                yield line+"-gov",1
-                counter+=1
+        def fromfile(fName,col):
+            with codecs.open(fName,"rt","utf8") as f:
+                for line in f:
+                    line=line.strip()
+                    if not line:
+                        continue
+                    cols=line.split("\t")
+                    yield cols[col],1
         v=Vocabulary()
-        v.build_vocab_from_unigram_count_iterator(fromstdin(),1)
-        pickle_vocab("vocab/FIN-pbv3-12arc-deptypes",v)
+        v.build_vocab_from_unigram_count_iterator(fromfile("/home/ginter/w2v-icd/train.txt",0),1)
+        pickle_vocab("vocab/CLFIN-wf",v)
+        v=Vocabulary()
+        v.build_vocab_from_unigram_count_iterator(fromfile("/home/ginter/w2v-icd/train.txt",1),1)
+        pickle_vocab("vocab/CLFIN-icd",v)
     except:
         traceback.print_exc()
     return
@@ -1134,7 +1295,7 @@ def build_vocab_pickles():
 
 if __name__ == "__main__":
     import os
-    os.nice(19)
+
 
     logging.basicConfig(format='%(asctime)s : %(threadName)s : %(levelname)s : %(message)s', level=logging.INFO)
     logging.info("running %s" % " ".join(sys.argv))

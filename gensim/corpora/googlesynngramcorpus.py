@@ -22,6 +22,7 @@ import os.path
 import glob
 import gzip
 import re
+import random
 
 #from gensim import interfaces
 
@@ -31,14 +32,18 @@ class SynTreeNode(object):
     
     """Represents one node (word) in the syntactic tree."""
 
-    def __init__(self,descString):
+    def __init__(self,descString,position):
         """`descString` one token descriptor like u'lying/VBG/dobj/0'"""
         self.token,self.pos,self.dType,self.governorIDX=descString.rsplit(u"/",3)
         self.governorIDX=int(self.governorIDX)
+        self.position=position
 
     def __cmp__(self,other):
         """Nodes sort on their governor index, which induces a topological order"""
-        return cmp(self.governorIDX,other.governorIDX)
+        if self.governorIDX!=other.governorIDX:
+            return cmp(self.governorIDX,other.governorIDX)
+        else:
+            return cmp(self.position,other.position) #...and then from left to right
 
 class GoogleSynNGramCorpus(object):
     
@@ -116,21 +121,121 @@ class GoogleSynNGramCorpus(object):
                 rest,depType,headNumber=token.rsplit(u"/",2)
                 yield depType, count
 
-    def iterPairs(self):
+    def _iterTriarcPairs(self,tokens,count):
+        if len(tokens)>4: #TODO: these must include functional words
+            return
+        govNum
+
+    def _iterBiarcPairs(self,tokens,count):
+        """
+        tokens are a list of SynTreeNode() instances.
+        """
+        if len(tokens)>3: #TODO: these must include functional words
+            return
+        govs=(tokens[0].governorIDX,tokens[1].governorIDX,tokens[2].governorIDX)
+        if govs==(0,1,2):
+            yield tokens[0].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[1].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[0].token,tokens[2].token,tokens[1].dType+">"+tokens[2].dType,count
+        elif govs==(2,0,2):
+            yield tokens[1].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[1].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[0].token,tokens[2].token,tokens[0].dType+"x"+tokens[2].dType,count
+        elif govs==(2,3,0):
+            yield tokens[1].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[2].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[2].token,tokens[0].token,tokens[1].dType+">"+tokens[0].dType,count
+        elif govs==(0,1,1):
+            yield tokens[0].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[0].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[1].token,tokens[2].token,tokens[1].dType+"x"+tokens[2].dType,count
+        elif govs==(3,3,0):
+            yield tokens[2].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[2].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[0].token,tokens[1].token,tokens[0].dType+"x"+tokens[1].dType,count
+        elif govs==(0,3,1):
+            yield tokens[0].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[2].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[0].token,tokens[1].token,tokens[2].dType+">"+tokens[1].dType,count
+        elif govs==(3,1,0):
+            yield tokens[2].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[0].token,tokens[1].token,tokens[1].dType,count
+            yield tokens[2].token,tokens[1].token,tokens[0].dType+">"+tokens[1].dType,count
+        elif govs==(2,0,1):
+            yield tokens[1].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[0].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[1].token,tokens[2].token,tokens[0].dType+">"+tokens[2].dType,count
+        elif govs==(3,0,2):
+            yield tokens[1].token,tokens[2].token,tokens[2].dType,count
+            yield tokens[2].token,tokens[0].token,tokens[0].dType,count
+            yield tokens[1].token,tokens[0].token,tokens[2].dType+">"+tokens[0].dType,count
+        else:
+            raise ValueError("Disallowed bi-arc structure: "+str(govs))
+        
+
+    @staticmethod
+    def gatherPathUp(tokenIDX,tokens):
+        t=tokens[tokenIDX]
+        if t.governorIDX==0:
+            #I'm done
+            return ""
+        else:
+            up=GoogleSynNGramCorpus.gatherPathUp(t.governorIDX-1,tokens)
+            if up:
+                return up+">"+t.dType
+            else:
+                return t.dType
+
+    def iterPairs(self,arcness,minCount):
+        for ngramLine in self.lines():
+            for x in self._iterPairs(ngramLine,arcness,minCount):
+                yield x
+
+    @classmethod
+    def _iterPairs(cls,ngramLine,arcness,minCount):
         """
         Return an iterator over (governor,dependent,depType,count) tuples. This currently only works if part=="arcs"
         `fileCount` = How many files to visit? Set to -1 for all (default)
         """
-        for ngramLine in self.lines():
+        for ngramLine in (ngramLine,):
             #includes<TAB>includes/VBZ/rcmod/0 telecom/NNP/dobj/1<TAB>count<TAB>...
             rootToken,dependency,count,rest=ngramLine.split(u"\t",3)
             count=int(count)
-            tokens=[SynTreeNode(t) for t in dependency.split()]
-            if len(tokens)>2: #This involves one of the functional words, skip (we will get the relevant deps elsewhere in the data)
+            if count<minCount:
                 continue
-            tokens.sort() #Sorts them by index of the governor, which brings the root as the first token
-            assert tokens[0].token==rootToken and tokens[0].governorIDX==0 and tokens[1].governorIDX in (1,2), ngramLine #any surprises somewhere?
-            yield (tokens[0].token,tokens[1].token,tokens[1].dType,count)
+            tokens=[SynTreeNode(t,i) for i,t in enumerate(dependency.split())]
+            if arcness in ("biarc","triarc"):
+                leafNodeNumbers=set(range(len(tokens)+1))-set(t.governorIDX for t in tokens) #These are *NOT* ZERO BASED
+                if 0 in leafNodeNumbers:
+                    assert 0 not in leafNodeNumbers
+                    continue
+                for idx,t in enumerate(tokens):
+                    if t.governorIDX==0:
+                        gov=idx
+                        break
+                leavesLR=sorted(leafNodeNumbers) #going from left to right, these are ONE-BASED
+                paths=[GoogleSynNGramCorpus.gatherPathUp(l-1,tokens) for l in leavesLR if tokens[l-1].dType not in ("cc","prep")]
+                if len(paths)==0:
+                    continue
+                if len(paths)>2:
+                    #raise ValueError("Imposssible structure "+dependency) #this must be somehow weird
+                    continue
+                path=u"x".join(paths)
+                if "punct" in path:
+                    continue
+                ####XXX WARNING: FILTER AWAY THE STAR CONFIGURATION FOR TRIARCS SOMEHOW BUG TODO########
+                if len(paths)==2: #join the two leaves
+                    yield tokens[leavesLR[0]-1].token, tokens[leavesLR[1]-1].token, path, count
+                elif len(paths)==1: #chain, join with the governor
+                    yield tokens[gov].token, tokens[leavesLR[0]-1].token, path, count
+                else:
+                    assert False, dependency
+            elif arcness=="arc":
+                if len(tokens)>2: #This involves one of the functional words, skip (we will get the relevant deps elsewhere in the data)
+                    continue
+                tokens.sort() #Sorts them by index of the governor, which brings the root as the first token
+                assert tokens[0].token==rootToken and tokens[0].governorIDX==0 and tokens[1].governorIDX in (1,2), ngramLine #any surprises somewhere?
+                yield (tokens[0].token,tokens[1].token,tokens[1].dType,count)
 
     def iterTokens(self):
         """
@@ -168,11 +273,26 @@ class GoogleSynNGramCorpus(object):
 if __name__=="__main__":
     #Quick test only
     import sys
-    
-    C=GoogleSynNGramCorpus.from_glob("/usr/share/ParseBank/google-syntax-ngrams/arcs/*.gz")
-    for x in C.iterPairs():
-        print x
-    
+ 
+    files=glob.glob("/usr/share/ParseBank/google-syntax-ngrams/arcs/randomly_shuffled/*.gz")
+    random.shuffle(files)
+    C=GoogleSynNGramCorpus.from_filelist(files[:2])
+    for g,d,dType,c in C.iterPairs(arcness="arc"):
+        if "punct" not in dType:
+            print dType
+    files=glob.glob("/usr/share/ParseBank/google-syntax-ngrams/biarcs/randomly_shuffled/*.gz")
+    random.shuffle(files)
+    C=GoogleSynNGramCorpus.from_filelist(files[:2])
+    for g,d,dType,c in C.iterPairs(arcness="biarc"):
+        if "punct" not in dType:
+            print dType
+    files=glob.glob("/usr/share/ParseBank/google-syntax-ngrams/triarcs/randomly_shuffled/*.gz")
+    random.shuffle(files)
+    C=GoogleSynNGramCorpus.from_filelist(files[:2])
+    for g,d,dType,c in C.iterPairs(arcness="triarc"):
+        if "punct" not in dType:
+            print dType
+     
 #    for t in C.depTypes():
 #        print t
 #    C=GoogleSynNGramCorpus("/usr/share/ParseBank/google-syntax-ngrams/arcs","arcs")

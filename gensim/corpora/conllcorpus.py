@@ -20,98 +20,87 @@ import subprocess #for external gzip. Reading gzipped corpora is a bottleneck, s
 import os.path
 
 #from gensim import interfaces
-
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 logger = logging.getLogger('gensim.corpora.conllcorpus')
-
-def openGZ(fName,threads=2):
-    """Tries to open a .gz file using 1) pigz 2) gzip 3) the gzip
-    module, in this order of priority. If pigz is installed, it will
-    be given `threads` as the number of threads to use for a further
-    speed-up over normal gzip.
-
-    `threads` = number of threads for pigz, ignored otherwise
-    """
-    if not os.path.exists(fName):
-        raise ValueError("No such file: "+fName)
-    #Try pigz (multithreaded implementation of gzip, sadly absent on most machines)
-    try:
-        p=subprocess.Popen(("pigz","--decompress","--to-stdout","--processes",str(threads),fName),stdout=subprocess.PIPE,stdin=None,stderr=subprocess.PIPE)
-        return p.stdout
-    except:
-        pass
-    #No pigz, try gzip
-    try:
-        p=subprocess.Popen(("gzip","--decompress","--to-stdout",fName),stdout=subprocess.PIPE,stdin=None,stderr=subprocess.PIPE)
-        return p.stdout
-    except:
-        pass
-    #No gzip either, too bad. This should then work for sure:
-    return gzip.open(fName,"r")
-
 
 class CoNLLCorpus(object):
     
-    def __init__(self,fName):
-        if not isinstance(fName,basestring):
-            raise ValueError("You need to initialize CoNLLCorpus with a fileName. It can be gzipped (.gz suffix)")
-        self.fName=fName
-        self.currSentenceIDX=0 #Maintained by _parseSentences, so we always know where we're reading
+    @classmethod
+    def from_filelist(cls,fileNames):
+        return cls(fileNames=fileNames)
 
-    def iterSentences(self,column=1,lowercase_all=True,max_count=-1,threads=2):
+    def __init__(self,fileNames):
+        self.fileNames=fileNames
+        self.gzBytesRead=0
+        self.totalGzBytes=sum(os.path.getsize(fName) for fName in self.fileNames)
+
+    def iterSentences(self,column=1,lowercase_all=True,attachPos=False):
         """Generates lists of tokens from a CoNLL file. UTF8 encoding pretty much assumed.
         `column` = which column holds the tokens? 1 is the default, but you might also want 2 or 3 for lemma
         `lowercase_all` = should we lowercase all tokens for you?
-        `max_count` = how many sentences to read?
-        `threads` = if we succeed in opening a gzipped file using a multi-threaded gzip, how many threads can we give it?
         """
-        for sent in self._parseSentences(tokenColumn=column,lowercase_all=lowercase_all,max_count=max_count,threads=threads):
-            yield [t[0] for t in sent]
+        for sent in self._parseSentences(tokenColumn=column,lowercase_all=lowercase_all):
+            if attachPos>0:
+                yield [t[0]+u"/"+t[1] for t in sent]
+            else:
+                yield [t[0] for t in sent]
 
-    def _parseSentences(self,tokenColumn=1,headColumn=9,deprelColumn=11,lowercase_all=True,max_count=-1,threads=2):
+    def progress(self):
+        """A [0,1] value reflecting the progress through the corpus in terms of (compressed) bytes read."""
+        return float(self.gzBytesRead)/self.totalGzBytes
+
+    #A B C D E F G H
+    #0 1 2 3 4 5 6 7
+    def iterFlatNGrams(self,N,tokenColumn=1,attachPos=False):
+        """Yields (flat) ngrams from the text"""
+        sentCounter=0
+        for sent in self.iterSentences(column=tokenColumn,lowercase_all=True,attachPos=attachPos):
+            if len(sent)<N:
+                continue
+            for t1 in xrange(len(sent)-N+1): #first word
+                yield u" ".join(itertools.islice(sent,t1,t1+N))
+            sentCounter+=1
+            if sentCounter%10000==0:
+                logger.info("Processed %d sentences (%.3f%%)"%(sentCounter,self.progress()*100.0))
+
+    def _parseSentences(self,tokenColumn=1,headColumn=9,deprelColumn=11,posColumn=4,lowercase_all=True):
         """Generates one sentence at a time, each sentence being a list of (token,int(head)-1,dType) tuples from the data.
         `tokenColumn` = from which column we should take the token text?
         `headColumn` = which column codes the head position?
         `deprelColumn` = which column codes the deprel?
         `lowercase_all` = Lowercase all tokens?
-        `max_count` = how many dependencies (not sentences!) should be read? -1 for all
-        `threads` = if we succeed in opening a gzipped file using a multi-threaded gzip, how many threads can we give it?
         """
-        if self.fName.endswith(".gz"): #...gzipped
-            dataIN=openGZ(self.fName)
-        else:
-            dataIN=open(self.fName,"rt")
-        self.currSentenceIDX=0
-        currSentence=[]
-        for line in dataIN:
-            if line.startswith("1\t"): #new sentence
+
+        gzBytesReadCompleteFiles=0 #bytes read from *completed* files
+        for fName in self.fileNames:
+            fIN=gzip.open(fName,"r")
+            currSentence=[]
+            for line in fIN:
+                self.gzBytesRead=fIN.myfileobj.tell()+gzBytesReadCompleteFiles #set the position in the collection
+                if line.startswith("1\t"): #new sentence
+                    if currSentence:
+                        yield currSentence
+                    currSentence=[]
+                if line and line[0].isdigit(): #Looks like a normal line, anything else is some junk or empty line -> ignore
+                    cols=line.split("\t",deprelColumn+1) #split as many times as needed to get to the deprel (which is always the right-most)
+                    if lowercase_all:
+                        currSentence.append((unicode(cols[tokenColumn],"utf-8").lower(),cols[posColumn],int(cols[headColumn])-1,cols[deprelColumn]))
+                    else:
+                        currSentence.append((unicode(cols[tokenColumn],"utf-8"),cols[posColumn],int(cols[headColumn])-1,cols[deprelColumn]))
+            else:
                 if currSentence:
                     yield currSentence
-                    self.currSentenceIDX+=1
-                    if max_count>=0 and self.currSentenceIDX>=max_count:
-                        break #Done
-                currSentence=[]
-            if line and line[0].isdigit(): #Looks like a normal line, anything else is some junk or empty line -> ignore
-                cols=line.split("\t",deprelColumn+1) #split as many times as needed to get to the deprel (which is always the right-most)
-                if lowercase_all:
-                    currSentence.append((unicode(cols[tokenColumn],"utf-8").lower(),int(cols[headColumn])-1,cols[deprelColumn]))
-                else:
-                    currSentence.append((unicode(cols[tokenColumn],"utf-8"),int(cols[headColumn])-1,cols[deprelColumn]))
-        else:
-            if currSentence:
-                yield currSentence
-        dataIN.close()
+            fIN.close()
+            gzBytesReadCompleteFiles+=os.path.getsize(fName)
 
-
-    def iterDeps(self,tokenColumn=1,headColumn=9,deprelColumn=11,lowercase_all=True,max_count=-1,threads=2):
+    def iterPairs(self,tokenColumn=1,headColumn=9,deprelColumn=11,lowercase_all=True):
         """Generates (gov,dep,dType,weight) tuples from the data.
         `tokenColumn` = from which column we should take the token text?
         `headColumn` = which column codes the head position?
         `deprelColumn` = which column codes the deprel?
         `lowercase_all` = Lowercase all tokens?
-        `max_count` = how many sentences (not dependencies!) should be read? -1 for all
-        `threads` = if we succeed in opening a gzipped file using a multi-threaded gzip, how many threads can we give it?
         """
-        for sent in self._parseSentences(tokenColumn, headColumn, deprelColumn,lowercase_all,max_count,threads=threads):
+        for sent in self._parseSentences(tokenColumn, headColumn, deprelColumn,lowercase_all):
             for dependent, headPos, depType in sent: #headPos is 0-based index into sent to the head token. -1 for root
                 if headPos==-1:
                     continue #TODO: How should I deal with the root?
@@ -121,7 +110,8 @@ if __name__=="__main__":
     #Quick test only
     import sys
 
-    C=CoNLLCorpus("/usr/share/ParseBank/parsebank_v3.conll09.gz")
-    for s in C.iterSentences(column=4,lowercase_all=True,max_count=30):
-        print (u" ".join(s).encode("utf-8"))
+    C=CoNLLCorpus.from_filelist(["/usr/share/ParseBank/parsebank_v3.conll09.gz"])
+    for x in C.iterFlatNGrams(5,attachPos=True):
+        print x.encode("utf-8")
+
 

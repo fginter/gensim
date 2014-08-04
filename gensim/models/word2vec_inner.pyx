@@ -240,6 +240,88 @@ def train_synngram_list(model, ngrams, alpha, _work):
             
 
     return result
+
+
+
+
+
+
+#ngrams: list of (w,icd,weight) tuples
+# here w,icd are Vocab() instances
+# we predict icd based on w, i.e. w goes on the input, icd goes on the output
+def train_icd_list(model, ngrams, alpha, _work):
+    cdef REAL_t *syn0 = <REAL_t *>(np.PyArray_DATA(model.syn0))
+    cdef REAL_t *syn1 = <REAL_t *>(np.PyArray_DATA(model.syn1))
+    cdef REAL_t *work
+    cdef np.uint32_t word2_index
+    cdef REAL_t _alpha = alpha
+    cdef int size = model.layer1_size
+
+    cdef REAL_t weights[MAX_NGRAMLIST_LEN]
+#    cdef np.uint32_t *points_w0[MAX_NGRAMLIST_LEN]
+    cdef np.uint32_t *points_icd[MAX_NGRAMLIST_LEN]
+#    cdef np.uint32_t *points_depTypes[MAX_NGRAMLIST_LEN]
+#    cdef np.uint8_t *codes_w0[MAX_NGRAMLIST_LEN]
+    cdef np.uint8_t *codes_icd[MAX_NGRAMLIST_LEN]
+#    cdef np.uint8_t *codes_depTypes[MAX_NGRAMLIST_LEN]
+    cdef int codelens_w[MAX_NGRAMLIST_LEN]
+    cdef int codelens_icd[MAX_NGRAMLIST_LEN]
+#    cdef int codelens_depTypes[MAX_NGRAMLIST_LEN]
+    cdef np.uint32_t indexes_w[MAX_NGRAMLIST_LEN]
+#    cdef np.uint32_t indexes_w1[MAX_NGRAMLIST_LEN]
+
+    cdef int ngram_list_len
+    cdef REAL_t cnt
+
+    cdef int i, j, k
+    cdef long result = 0
+
+    # convert Python structures to primitive types, so we can release the GIL
+    work = <REAL_t *>np.PyArray_DATA(_work)
+    ngram_list_len = <int>min(MAX_NGRAMLIST_LEN, len(ngrams))
+    for i in range(ngram_list_len):
+        weights[i]=ngrams[i][2]
+        #counts[i]=1.0/(1.0+exp(-0.005*<REAL_t> ngrams[i][3]))	
+        w = ngrams[i][0]
+        if w is None:
+            codelens_w[i] = 0
+        else:
+            indexes_w[i] = w.index
+            codelens_w[i] = <int>len(w.code)
+#            codes_w0[i] = <np.uint8_t *>np.PyArray_DATA(w0.code)
+#            points_w0[i] = <np.uint32_t *>np.PyArray_DATA(w0.point)
+        icd = ngrams[i][1]
+        if icd is None:
+            codelens_icd[i] = 0
+        else:
+#            indexes_w1[i] = w1.index
+            codelens_icd[i] = <int>len(icd.code)
+            codes_icd[i] = <np.uint8_t *>np.PyArray_DATA(icd.code)
+            points_icd[i] = <np.uint32_t *>np.PyArray_DATA(icd.point)
+        if w is not None and icd is not None:
+            result += 1
+
+    # release GIL & train on the ngrams
+    with nogil:
+        for i in range(ngram_list_len):
+            if codelens_w[i] == 0 or codelens_icd[i] == 0:
+                continue
+#            j = i - window + reduced_windows[i]
+#            if j < 0:
+#                j = 0
+#            k = i + window + 1 - reduced_windows[i]
+#            if k > sentence_len:
+#                k = sentence_len
+#            for j in range(j, k):
+#                if j == i or codelens[j] == 0:
+#                    continue
+            #fast_sentence_ng(points_w1[i], codes_w1[i], codelens_w1[i], syn0, syn1, size, indexes_w0[i], points_depTypes[i], codes_depTypes[i], codelens_depTypes[i], _alpha*counts[i], work)
+            fast_sentence(points_icd[i], codes_icd[i], codelens_icd[i], syn0, syn1, size, indexes_w[i], _alpha*weights[i], work)
+            
+
+    return result
+
+
     
 
 

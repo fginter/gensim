@@ -19,6 +19,7 @@ import os.path
 import glob
 import gzip
 import re
+import random
 
 #from gensim import interfaces
 
@@ -83,7 +84,7 @@ class GoogleFlatNGramCorpus(object):
                     yield ngramLine
             gzBytesReadCompleteFiles+=os.path.getsize(fName)
 
-    def yieldPairs(self,nGram,count,whichPairs):
+    def yieldPairs(self,nGram,count,whichPairs,windowSize,posIntoPosition):
         """" Yields (left,right,whichPairs,count) from the nGram. Here
         whichPairs sits in the same spot as dependency type for the
         syntactic ngram corpus, as it might be useful for something
@@ -92,29 +93,64 @@ class GoogleFlatNGramCorpus(object):
         `nGram` is a unicode
         `count` is an integer
         `whichPairs` = L* for leftmost word against all, *R for rightmost word against all, LR for (leftmostword,rightmostword), L**R for L* union *R
+        `windowSize` = random context reduction as in Mikolov et al. Set to 0 to get all pairs, and set to integer (likely 5) to  pretend we are working
+         with a `windowSize` large window (e.g. 4 for five-gram data). You can set this higher than the length of the ngrams -1 to simulate a larger window 
+         (i.e. increase the chance that all tokens make it in)
         """
+
         tokens=nGram.split()
+        POSs=[]
+        if posIntoPosition:
+            if posIntoPosition=="fi":
+                delim="/"
+            else:
+                delim="_"
+            tmp=[]
+            for t in tokens:
+                try:
+                    t,POS=t.rsplit(delim,1)
+                except:
+                    POS="x"
+                tmp.append(t)
+                POSs.append(POS)
+            tokens=tmp
         if u"_" in tokens[0]:
             return #Skip over the POS-labeled 
+
+        if windowSize!=0:
+            red=random.randint(0,windowSize-1) #I can reduce not at all (red==windowsSize-1), or up to leaving only one word (red==0)
+            leftReduction=max(0,len(tokens)-2-red) #This is where the left context will start, max reduction (when red==0) corresponds to a context of one to the left i.e. len(tokens)-2
+            red=random.randint(0,windowSize-1)
+            rightReduction=min(len(tokens),red+2) #this is where the right context will end +1 (i.e. slice notation) Max reduction is one word to the right, (when red==0)
+        else:
+            leftReduction=0
+            rightReduction=len(tokens)
+        
         if whichPairs=="L*":
             l=tokens[0]
-            for r in itertools.islice(tokens,1,len(tokens)):
+            for r in itertools.islice(tokens,1,rightReduction):
                 yield (l,r,"R",count)
         elif whichPairs=="*R":
             r=tokens[-1]
-            for l in itertools.islice(tokens,len(tokens)-1):
+            for l in itertools.islice(tokens,leftReduction,len(tokens)-1):
                 yield (r,l,"L",count)
         elif whichPairs=="LR":
             yield (tokens[0],tokens[-1], "R", count)
         elif whichPairs=="L**R":
             l=tokens[0]
-            for r in itertools.islice(tokens,1,len(tokens)):
-                yield (l,r,"R",count)
+            for i,r in enumerate(itertools.islice(tokens,1,rightReduction)):
+                if posIntoPosition:
+                    yield (l,r,"R"+str(i+1)+POSs[i],count) #R1 R2 R3...
+                else:
+                    yield (l,r,"R"+str(i+1),count) #R1 R2 R3...
             r=tokens[-1]
-            for l in itertools.islice(tokens,len(tokens)-1):
-                yield (r,l,"L",count)
+            for i,l in enumerate(itertools.islice(tokens,leftReduction,len(tokens)-1)):
+                if posIntoPosition:
+                    yield (r,l,"L"+str(i+1)+POSs[i],count) #L1 L2 L3
+                else:
+                    yield (l,r,"R"+str(i+1),count) #R1 R2 R3...                    yield (r,l,"L"+str(i+1),count) #L1 L2 L3
         
-    def iterPairs(self,whichPairs):
+    def iterPairs(self,whichPairs,windowSize,posIntoPosition):
         """
         Return a generator over (focusword,contextword,dist,count) tuples. Dist
         1 are neighboring words w1,w2, dist -1 are neighboring words
@@ -138,21 +174,20 @@ class GoogleFlatNGramCorpus(object):
                 currCount=count
                 currNGram=ngram
             else:
-                for x in self.yieldPairs(currNGram,currCount,whichPairs):
+                for x in self.yieldPairs(currNGram,currCount,whichPairs,windowSize,posIntoPosition):
                     yield x
                 currNGram=ngram
                 currCount=count
         else:
-            for x in self.yieldPairs(currNGram,currCount,whichPairs):
+            for x in self.yieldPairs(currNGram,currCount,whichPairs,windowSize,posIntoPosition):
                 yield x
             
 
-    def iterTokens(self,fileCount=-1):
+    def iterTokens(self):
         """
         Return a generator over (token,count) tuples. This only works if part=="nodes"
-        `fileCount` = How many files to visit? Set to -1 for all (default)
         """
-        for l,_,_,count in self.iterPairs("LR"): #this just gives me (X,X,"LR",count) when used on unigrams 
+        for l,_,_,count in self.iterPairs("LR",0): #this just gives me (X,X,"LR",count) when used on unigrams 
             yield l,count
 
 if __name__=="__main__":
@@ -160,9 +195,11 @@ if __name__=="__main__":
     import sys
     import glob
 
-    C=GoogleFlatNGramCorpus(fileNames=glob.glob("/usr/share/ParseBank/google-ngrams/5grams/repacked-uniq/*.gz"))
-    for x in C.iterTokens():
-        print x
+    fN=glob.glob("/usr/share/ParseBank/google-ngrams/5grams/repacked-pos-uniq/*.gz")
+    random.shuffle(fN)
+    C=GoogleFlatNGramCorpus(fileNames=fN)
+    for x in C.iterPairs("L**R",5,posIntoPosition="eng"):
+        print x[2]
     
 #    for t in C.depTypes(3):
 #        print t
